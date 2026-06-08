@@ -133,16 +133,27 @@ int main(int argc, char** argv) {
 
     const char* sourcePath = nullptr;
     const char* detailPath = "output/out.txt";
+    bool noOpt = false;
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
             detailPath = argv[++i];
+        } else if (strcmp(argv[i], "--no-opt") == 0) {
+            noOpt = true;
+        } else if (argv[i][0] == '-') {
+            fprintf(stderr, "Unknown option: %s\n", argv[i]);
+            fprintf(stderr, "Usage: %s <source> [-o report.txt] [--no-opt]\n", argv[0]);
+            return 1;
         } else if (!sourcePath) {
             sourcePath = argv[i];
+        } else {
+            fprintf(stderr, "Unexpected argument: %s\n", argv[i]);
+            fprintf(stderr, "Usage: %s <source> [-o report.txt] [--no-opt]\n", argv[0]);
+            return 1;
         }
     }
 
     if (!sourcePath) {
-        fprintf(stderr, "Usage: %s <source> [-o report.txt]\n", argv[0]);
+        fprintf(stderr, "Usage: %s <source> [-o report.txt] [--no-opt]\n", argv[0]);
         return 1;
     }
 
@@ -218,13 +229,18 @@ int main(int argc, char** argv) {
         irgen.generate(astRoot);
         irgen.dumpTo("output/output_raw.ir");
 
-        printf("代码优化... ");
-        IROptimizer opt;
-        IROptStats optStats = opt.run(irgen.getCode());
-        printf("常量折叠 %d, 传播 %d, CSE %d, 消除 %d, 外提 %d\n",
-               optStats.constFold, optStats.constProp, optStats.cseElim,
-               optStats.deadRemoved, optStats.hoisted);
-        irgen.dump();
+        if (noOpt) {
+            irgen.dump();
+            printf("已跳过 IR 优化 (--no-opt)，output.ir 与 output_raw.ir 相同\n");
+        } else {
+            printf("代码优化... ");
+            IROptimizer opt;
+            IROptStats optStats = opt.run(irgen.getCode());
+            printf("常量折叠 %d, 传播 %d, CSE %d, 消除 %d, 外提 %d\n",
+                   optStats.constFold, optStats.constProp, optStats.cseElim,
+                   optStats.deadRemoved, optStats.hoisted);
+            irgen.dump();
+        }
 
         printf("全部阶段完成。\n");
     } else {

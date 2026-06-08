@@ -120,6 +120,8 @@ gen_docs.bat
 | 2 | 编译并运行 `build\seuyacc.exe --lalr grammar\yacc.y generated/yyparse.cpp` | `generated/yyparse.cpp`（LALR 分析表 + 归约代码） |
 | 3 | 编译各前端模块并链接 | `build\compiler.exe` |
 
+`build.bat` 编译选项含 **`-Wall`**，便于开发期暴露未使用变量等问题。
+
 修改 **`grammar/lex.l`** 或 **`grammar/yacc.y`** 后，须重新运行 `build.bat`（会重新生成分析器并链接）。
 
 ### 声明文法（`var_decl` / `func_def`）
@@ -143,14 +145,20 @@ gen_docs.bat
 ### 用法
 
 ```text
-build\compiler.exe <源文件> [-o 报告.txt]
+build\compiler.exe <源文件> [-o 报告.txt] [--no-opt]
 ```
+
+| 选项 | 说明 |
+|------|------|
+| `-o path` | 词法/语法/语义详情报告路径（默认 `output/out.txt`） |
+| `--no-opt` | 跳过 IR 优化；`output/output.ir` 与 `output/output_raw.ir` 内容相同 |
 
 示例：
 
 ```bat
 build\compiler.exe examples\test.c
 build\compiler.exe examples\test.c -o output\out.txt
+build\compiler.exe examples\block_scope.c --no-opt
 ```
 
 ### 处理阶段
@@ -162,7 +170,7 @@ build\compiler.exe examples\test.c -o output\out.txt
 | 3 | 语法树（文本） | 已写入提示 | `output/out.txt` |
 | 4 | 语法树（Graphviz） | 已导出提示 | `output/out.txt` + `output/ast.dot` |
 | 5 | 语义分析 | 通过 / 失败（含错误数） | `output/out.txt` 中符号表与类型检查 |
-| 6 | 中间代码 | 优化统计（仅语义通过时） | `output/output.ir`、`output/output_raw.ir` |
+| 6 | 中间代码 | 优化统计（默认）或 `--no-opt` 提示 | `output/output.ir`、`output/output_raw.ir` |
 
 语法分析失败时以非零退出码结束（**1** = 语法错误，`yyparse` 失败或 `parseErrorCount > 0`），不生成 AST/IR。  
 语义分析失败（含符号重定义、类型错误）时退出码为 **2**，**不生成 IR**。
@@ -188,7 +196,7 @@ build\compiler.exe examples\test.c -o output\out.txt
 
 ### 中间代码优化
 
-生成 IR 后自动运行 **IROptimizer**（`ir_opt.cpp`），包含：
+生成 IR 后默认运行 **IROptimizer**（`ir_opt.cpp`）；加 **`--no-opt`** 可跳过优化，直接输出与 `output_raw.ir` 相同的 `output.ir`。
 
 | Pass | 说明 |
 |------|------|
