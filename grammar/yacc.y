@@ -4,7 +4,9 @@
  * ============================================================================
  *
  * 【文法层次】program → global_decl* → var_decl | func_def
- *              func_def → type id (params) compound_stmt
+ *              var_decl → type_spec init_declarator ';'
+ *              func_def → type_spec declarator compound_stmt
+ *              （与 param_decl 共用 declarator / DeclaratorInfo::buildType）
  *              stmt → if | while | return | break | continue | expr_stmt | block
  *              expr → assign → logic_or → ... → primary（运算符优先级由 %left 声明）
  *
@@ -116,20 +118,24 @@ struct DeclaratorInfo {
 
     Type* buildType(Type* base) const {
         Type* t = base;
-        for (auto it = mods.rbegin(); it != mods.rend(); ++it) {
-            switch (it->kind) {
-            case DECL_FUNC: {
+        for (size_t i = 0; i < mods.size(); ++i) {
+            const DeclMod& m = mods[i];
+            if (m.kind == DECL_PTR && i + 1 < mods.size() && mods[i + 1].kind == DECL_ARRAY) {
+                t = new ArrayType(new PointerType(t), mods[i + 1].arraySize);
+                i += 1;
+            } else if (m.kind == DECL_PTR && i + 1 < mods.size() && mods[i + 1].kind == DECL_FUNC) {
                 FunctionType* ft = new FunctionType(base);
-                fillFunctionParams(ft, it->paramList);
-                t = ft;
-                break;
-            }
-            case DECL_PTR:
+                fillFunctionParams(ft, mods[i + 1].paramList);
+                t = new PointerType(ft);
+                i += 1;
+            } else if (m.kind == DECL_PTR) {
                 t = new PointerType(t);
-                break;
-            case DECL_ARRAY:
-                t = new ArrayType(t, it->arraySize);
-                break;
+            } else if (m.kind == DECL_ARRAY) {
+                t = new ArrayType(t, m.arraySize);
+            } else if (m.kind == DECL_FUNC) {
+                FunctionType* ft = new FunctionType(base);
+                fillFunctionParams(ft, m.paramList);
+                t = ft;
             }
         }
         return t;
@@ -152,6 +158,42 @@ static MultiNode* makeVarDeclNode(Type* type, const std::string& name, int line,
     if (initExpr)
         node->addChild(std::unique_ptr<ASTNode>(initExpr));
     return node;
+}
+
+/** init_declarator 归约中间结果：声明符 + 可选初值 */
+struct InitDeclarator {
+    DeclaratorInfo* declarator = nullptr;
+    ASTNode* init = nullptr;
+};
+
+/** type_spec + init_declarator 完成 VarDecl AST 构建 */
+static MultiNode* finishVarDecl(Type* base, InitDeclarator* parts, int line) {
+    DeclaratorInfo* d = parts->declarator;
+    Type* vtype = d->buildType(base);
+    std::string name = d->name;
+    ASTNode* init = parts->init;
+    delete d;
+    delete parts;
+    return makeVarDeclNode(vtype, name, line, init);
+}
+
+/** type_spec + declarator（含形参表）完成 FuncDef AST 构建 */
+static MultiNode* finishFuncDef(Type* retType, DeclaratorInfo* d, void*& bodyPtr, int line) {
+    std::string fname = d->name;
+    MultiNode* params = nullptr;
+    for (auto& m : d->mods) {
+        if (m.kind == DECL_FUNC) {
+            params = m.paramList;
+            m.paramList = nullptr;
+        }
+    }
+    delete d;
+    auto* func = new MultiNode(NodeKind::FuncDef, line);
+    func->addChild(std::unique_ptr<ASTNode>(new TypeNode(retType, line)));
+    func->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(fname, line)));
+    if (params) func->addChild(std::unique_ptr<ASTNode>(params));
+    func->addChild(adopt(bodyPtr));
+    return func;
 }
 
 %}
@@ -194,7 +236,7 @@ static MultiNode* makeVarDeclNode(Type* type, const std::string& name, int line,
 #define T_GE T_GE_OP
 
 /* 携带 AST/类型指针的非终结符 */
-%type <ptr> program global_decl var_decl struct_def union_def struct_field_list field_decl field_declarator func_def type_spec
+%type <ptr> program global_decl var_decl init_declarator struct_def union_def struct_field_list field_decl field_declarator func_def type_spec
 %type <ptr> param_list param_decl param_decl_list declarator direct_declarator
 %type <ptr> compound_stmt block_items block_item stmt matched_stmt unmatched_stmt
 %type <ptr> expr_stmt while_stmt for_stmt for_init for_cond for_step switch_stmt switch_cases case_block default_block return_stmt break_stmt continue_stmt
@@ -361,263 +403,31 @@ type_spec:
     }
     ;
 
-/* ==================== 全局/局部变量声明 ==================== */
-var_decl:
-    T_INT T_IDENTIFIER ';' {
-        std::string name = takeIdentName($2.ptr);
-        auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
-        node->addChild(std::unique_ptr<ASTNode>(new TypeNode(BasicType::Int, yylineno)));
-        node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        $$.ptr = node;
+/* ==================== 变量声明（type + declarator，与形参共用 declarator 链） ==================== */
+init_declarator:
+    declarator {
+        auto* parts = new InitDeclarator();
+        parts->declarator = (DeclaratorInfo*)$1.ptr;
+        $$.ptr = parts;
     }
-    | T_INT T_IDENTIFIER '[' T_CONSTANT ']' ';' {
-        std::string name = takeIdentName($2.ptr);
-        auto* arrType = new ArrayType(BasicType::Int, $4.ival);
-        auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
-        node->addChild(std::unique_ptr<ASTNode>(new TypeNode(arrType, yylineno)));
-        node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        $$.ptr = node;
-    }
-    | T_INT '*' T_IDENTIFIER ';' {
-        std::string name = takeIdentName($3.ptr);
-        auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
-        node->addChild(std::unique_ptr<ASTNode>(new TypeNode(new PointerType(BasicType::Int), yylineno)));
-        node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        $$.ptr = node;
-    }
-    | T_INT '*' T_IDENTIFIER '[' T_CONSTANT ']' ';' {
-        std::string name = takeIdentName($3.ptr);
-        auto* pt = new PointerType(BasicType::Int);
-        auto* arrType = new ArrayType(pt, $5.ival);
-        auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
-        node->addChild(std::unique_ptr<ASTNode>(new TypeNode(arrType, yylineno)));
-        node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        $$.ptr = node;
-    }
-    | T_INT '(' '*' T_IDENTIFIER ')' '(' param_list ')' ';' {
-        std::string name = takeIdentName($4.ptr);
-        FunctionType* ft = new FunctionType(BasicType::Int);
-        if ($7.ptr) DeclaratorInfo::fillFunctionParams(ft, (MultiNode*)$7.ptr);
-        auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
-        node->addChild(std::unique_ptr<ASTNode>(new TypeNode(new PointerType(ft), yylineno)));
-        node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        $$.ptr = node;
-    }
-    | T_FLOAT T_IDENTIFIER ';' {
-        std::string name = takeIdentName($2.ptr);
-        auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
-        node->addChild(std::unique_ptr<ASTNode>(new TypeNode(BasicType::Float, yylineno)));
-        node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        $$.ptr = node;
-    }
-    | T_FLOAT T_IDENTIFIER '[' T_CONSTANT ']' ';' {
-        std::string name = takeIdentName($2.ptr);
-        auto* arrType = new ArrayType(BasicType::Float, $4.ival);
-        auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
-        node->addChild(std::unique_ptr<ASTNode>(new TypeNode(arrType, yylineno)));
-        node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        $$.ptr = node;
-    }
-    | T_FLOAT '*' T_IDENTIFIER ';' {
-        std::string name = takeIdentName($3.ptr);
-        auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
-        node->addChild(std::unique_ptr<ASTNode>(new TypeNode(new PointerType(BasicType::Float), yylineno)));
-        node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        $$.ptr = node;
-    }
-    | T_DOUBLE T_IDENTIFIER ';' {
-        std::string name = takeIdentName($2.ptr);
-        auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
-        node->addChild(std::unique_ptr<ASTNode>(new TypeNode(BasicType::Double, yylineno)));
-        node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        $$.ptr = node;
-    }
-    | T_DOUBLE T_IDENTIFIER '[' T_CONSTANT ']' ';' {
-        std::string name = takeIdentName($2.ptr);
-        auto* arrType = new ArrayType(BasicType::Double, $4.ival);
-        auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
-        node->addChild(std::unique_ptr<ASTNode>(new TypeNode(arrType, yylineno)));
-        node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        $$.ptr = node;
-    }
-    | T_CHAR T_IDENTIFIER ';' {
-        std::string name = takeIdentName($2.ptr);
-        auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
-        node->addChild(std::unique_ptr<ASTNode>(new TypeNode(BasicType::Char, yylineno)));
-        node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        $$.ptr = node;
-    }
-    | T_CHAR '*' T_IDENTIFIER ';' {
-        std::string name = takeIdentName($3.ptr);
-        auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
-        node->addChild(std::unique_ptr<ASTNode>(new TypeNode(new PointerType(BasicType::Char), yylineno)));
-        node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        $$.ptr = node;
-    }
-    | T_STRUCT T_IDENTIFIER T_IDENTIFIER ';' {
-        std::string tag = takeIdentName($2.ptr);
-        std::string name = takeIdentName($3.ptr);
-        StructType* st = lookupStructType(tag);
-        if (!st) st = new StructType(tag);
-        auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
-        node->addChild(std::unique_ptr<ASTNode>(new TypeNode(st, yylineno)));
-        node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        $$.ptr = node;
-    }
-    | T_STRUCT T_IDENTIFIER '*' T_IDENTIFIER ';' {
-        std::string tag = takeIdentName($2.ptr);
-        std::string name = takeIdentName($4.ptr);
-        StructType* st = lookupStructType(tag);
-        if (!st) st = new StructType(tag);
-        auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
-        node->addChild(std::unique_ptr<ASTNode>(new TypeNode(new PointerType(st), yylineno)));
-        node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        $$.ptr = node;
-    }
-    | T_STRUCT T_IDENTIFIER '*' T_IDENTIFIER '[' T_CONSTANT ']' ';' {
-        std::string tag = takeIdentName($2.ptr);
-        std::string name = takeIdentName($4.ptr);
-        StructType* st = lookupStructType(tag);
-        if (!st) st = new StructType(tag);
-        auto* pt = new PointerType(st);
-        auto* arrType = new ArrayType(pt, $6.ival);
-        auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
-        node->addChild(std::unique_ptr<ASTNode>(new TypeNode(arrType, yylineno)));
-        node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        $$.ptr = node;
-    }
-    | T_UNION T_IDENTIFIER T_IDENTIFIER ';' {
-        std::string tag = takeIdentName($2.ptr);
-        std::string name = takeIdentName($3.ptr);
-        UnionType* ut = lookupUnionType(tag);
-        if (!ut) ut = new UnionType(tag);
-        auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
-        node->addChild(std::unique_ptr<ASTNode>(new TypeNode(ut, yylineno)));
-        node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        $$.ptr = node;
-    }
-    | T_UNION T_IDENTIFIER '*' T_IDENTIFIER ';' {
-        std::string tag = takeIdentName($2.ptr);
-        std::string name = takeIdentName($4.ptr);
-        UnionType* ut = lookupUnionType(tag);
-        if (!ut) ut = new UnionType(tag);
-        auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
-        node->addChild(std::unique_ptr<ASTNode>(new TypeNode(new PointerType(ut), yylineno)));
-        node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        $$.ptr = node;
-    }
-    | T_INT T_IDENTIFIER '=' expression ';' {
-        auto init = adopt($4.ptr);
-        std::string name = takeIdentName($2.ptr);
-        $$.ptr = makeVarDeclNode(BasicType::Int, name, yylineno, init.release());
-    }
-    | T_INT T_IDENTIFIER '[' T_CONSTANT ']' '=' expression ';' {
-        auto init = adopt($7.ptr);
-        std::string name = takeIdentName($2.ptr);
-        auto* arrType = new ArrayType(BasicType::Int, $4.ival);
-        $$.ptr = makeVarDeclNode(arrType, name, yylineno, init.release());
-    }
-    | T_FLOAT T_IDENTIFIER '=' expression ';' {
-        auto init = adopt($4.ptr);
-        std::string name = takeIdentName($2.ptr);
-        $$.ptr = makeVarDeclNode(BasicType::Float, name, yylineno, init.release());
-    }
-    | T_DOUBLE T_IDENTIFIER '=' expression ';' {
-        auto init = adopt($4.ptr);
-        std::string name = takeIdentName($2.ptr);
-        $$.ptr = makeVarDeclNode(BasicType::Double, name, yylineno, init.release());
-    }
-    | T_CHAR T_IDENTIFIER '=' expression ';' {
-        auto init = adopt($4.ptr);
-        std::string name = takeIdentName($2.ptr);
-        $$.ptr = makeVarDeclNode(BasicType::Char, name, yylineno, init.release());
-    }
-    | T_INT '*' T_IDENTIFIER '=' expression ';' {
-        auto init = adopt($5.ptr);
-        std::string name = takeIdentName($3.ptr);
-        $$.ptr = makeVarDeclNode(new PointerType(BasicType::Int), name, yylineno, init.release());
-    }
-    | T_FLOAT '*' T_IDENTIFIER '=' expression ';' {
-        auto init = adopt($5.ptr);
-        std::string name = takeIdentName($3.ptr);
-        $$.ptr = makeVarDeclNode(new PointerType(BasicType::Float), name, yylineno, init.release());
-    }
-    | T_CHAR '*' T_IDENTIFIER '=' expression ';' {
-        auto init = adopt($5.ptr);
-        std::string name = takeIdentName($3.ptr);
-        $$.ptr = makeVarDeclNode(new PointerType(BasicType::Char), name, yylineno, init.release());
-    }
-    | T_STRUCT T_IDENTIFIER T_IDENTIFIER '=' expression ';' {
-        auto init = adopt($5.ptr);
-        std::string tag = takeIdentName($2.ptr);
-        std::string name = takeIdentName($3.ptr);
-        StructType* st = lookupStructType(tag);
-        if (!st) st = new StructType(tag);
-        $$.ptr = makeVarDeclNode(st, name, yylineno, init.release());
-    }
-    | T_STRUCT T_IDENTIFIER '*' T_IDENTIFIER '=' expression ';' {
-        auto init = adopt($6.ptr);
-        std::string tag = takeIdentName($2.ptr);
-        std::string name = takeIdentName($4.ptr);
-        StructType* st = lookupStructType(tag);
-        if (!st) st = new StructType(tag);
-        $$.ptr = makeVarDeclNode(new PointerType(st), name, yylineno, init.release());
-    }
-    | T_UNION T_IDENTIFIER T_IDENTIFIER '=' expression ';' {
-        auto init = adopt($5.ptr);
-        std::string tag = takeIdentName($2.ptr);
-        std::string name = takeIdentName($3.ptr);
-        UnionType* ut = lookupUnionType(tag);
-        if (!ut) ut = new UnionType(tag);
-        $$.ptr = makeVarDeclNode(ut, name, yylineno, init.release());
-    }
-    | T_UNION T_IDENTIFIER '*' T_IDENTIFIER '=' expression ';' {
-        auto init = adopt($6.ptr);
-        std::string tag = takeIdentName($2.ptr);
-        std::string name = takeIdentName($4.ptr);
-        UnionType* ut = lookupUnionType(tag);
-        if (!ut) ut = new UnionType(tag);
-        $$.ptr = makeVarDeclNode(new PointerType(ut), name, yylineno, init.release());
+    | declarator '=' expression {
+        auto* parts = new InitDeclarator();
+        parts->declarator = (DeclaratorInfo*)$1.ptr;
+        parts->init = grab($3.ptr);
+        $$.ptr = parts;
     }
     ;
 
-/* ==================== 函数定义（含形参表与复合语句体） ==================== */
+var_decl:
+    type_spec init_declarator ';' {
+        $$.ptr = finishVarDecl((Type*)$1.ptr, (InitDeclarator*)$2.ptr, yylineno);
+    }
+    ;
+
+/* ==================== 函数定义（type + declarator + 复合语句体） ==================== */
 func_def:
-    T_INT T_IDENTIFIER '(' param_list ')' compound_stmt {
-        std::string fname = takeIdentName($2.ptr);
-        auto* func = new MultiNode(NodeKind::FuncDef, yylineno);
-        func->addChild(std::unique_ptr<ASTNode>(new TypeNode(BasicType::Int, yylineno)));
-        func->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(fname, yylineno)));
-        if ($4.ptr) func->addChild(adopt($4.ptr));
-        func->addChild(adopt($6.ptr));
-        $$.ptr = func;
-    }
-    | T_FLOAT T_IDENTIFIER '(' param_list ')' compound_stmt {
-        std::string fname = takeIdentName($2.ptr);
-        auto* func = new MultiNode(NodeKind::FuncDef, yylineno);
-        func->addChild(std::unique_ptr<ASTNode>(new TypeNode(BasicType::Float, yylineno)));
-        func->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(fname, yylineno)));
-        if ($4.ptr) func->addChild(adopt($4.ptr));
-        func->addChild(adopt($6.ptr));
-        $$.ptr = func;
-    }
-    | T_DOUBLE T_IDENTIFIER '(' param_list ')' compound_stmt {
-        std::string fname = takeIdentName($2.ptr);
-        auto* func = new MultiNode(NodeKind::FuncDef, yylineno);
-        func->addChild(std::unique_ptr<ASTNode>(new TypeNode(BasicType::Double, yylineno)));
-        func->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(fname, yylineno)));
-        if ($4.ptr) func->addChild(adopt($4.ptr));
-        func->addChild(adopt($6.ptr));
-        $$.ptr = func;
-    }
-    | T_VOID T_IDENTIFIER '(' param_list ')' compound_stmt {
-        std::string fname = takeIdentName($2.ptr);
-        auto* func = new MultiNode(NodeKind::FuncDef, yylineno);
-        func->addChild(std::unique_ptr<ASTNode>(new TypeNode(BasicType::Void, yylineno)));
-        func->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(fname, yylineno)));
-        if ($4.ptr) func->addChild(adopt($4.ptr));
-        func->addChild(adopt($6.ptr));
-        $$.ptr = func;
+    type_spec declarator compound_stmt {
+        $$.ptr = finishFuncDef((Type*)$1.ptr, (DeclaratorInfo*)$2.ptr, $3.ptr, yylineno);
     }
     ;
 
@@ -830,20 +640,8 @@ for_init:
         init->addChild(adopt($1.ptr));
         $$.ptr = init;
     }
-    | T_INT T_IDENTIFIER {
-        std::string name = takeIdentName($2.ptr);
-        auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
-        node->addChild(std::unique_ptr<ASTNode>(new TypeNode(BasicType::Int, yylineno)));
-        node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        $$.ptr = node;
-    }
-    | T_INT T_IDENTIFIER '=' expression {
-        std::string name = takeIdentName($2.ptr);
-        auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
-        node->addChild(std::unique_ptr<ASTNode>(new TypeNode(BasicType::Int, yylineno)));
-        node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        node->addChild(adopt($4.ptr));
-        $$.ptr = node;
+    | type_spec init_declarator {
+        $$.ptr = finishVarDecl((Type*)$1.ptr, (InitDeclarator*)$2.ptr, yylineno);
     }
     ;
 

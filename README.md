@@ -122,6 +122,18 @@ gen_docs.bat
 
 修改 **`grammar/lex.l`** 或 **`grammar/yacc.y`** 后，须重新运行 `build.bat`（会重新生成分析器并链接）。
 
+### 声明文法（`var_decl` / `func_def`）
+
+变量与函数定义共用 **`type_spec` + `declarator`** 链（见 `grammar/yacc.y`），不再为每种类型/修饰符单独写产生式：
+
+| 非终结符 | 形式 | 说明 |
+|----------|------|------|
+| `var_decl` | `type_spec init_declarator ';'` | `init_declarator` = `declarator` 或带 `=` 初值 |
+| `func_def` | `type_spec declarator compound_stmt` | 形参表在 `declarator` 的 `(...)` 中 |
+| `param_decl` | `type_spec declarator` | 与变量声明共用 `DeclaratorInfo::buildType` |
+
+语义动作集中在 `finishVarDecl` / `finishFuncDef`；`for_init` 中的局部声明复用 `init_declarator`。
+
 > **注意**：`grammar/lex.l` 规则区仅支持**整行** `/* ... */` 注释；勿在 pattern 或 `{ action }` 行尾加注释，否则 SeuLex 解析会失败。
 
 ---

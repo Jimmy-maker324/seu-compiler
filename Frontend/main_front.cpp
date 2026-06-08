@@ -186,7 +186,7 @@ int main(int argc, char** argv) {
         printer.print(astRoot, detailOut);
         detailOut << "\n";
 
-        if (false) {
+        if (true) {
         ASTDotExporter dotter;
         dotter.exportToFile(astRoot, "output/ast.dot");
         detailOut << "========== 语法树 (Graphviz) ==========\n";
