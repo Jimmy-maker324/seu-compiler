@@ -1,0 +1,12 @@
+# 构建产物
+build/
+
+# SeuLex / SeuYacc 生成代码（build.bat 重新生成）
+generated/
+
+# 编译器运行输出（保留 output/ 目录结构）
+output/*
+!output/.gitkeep
+
+# Doxygen 生成文档（gen_docs.bat 重新生成）
+docs/html/

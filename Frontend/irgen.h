@@ -1,0 +1,79 @@
+/**
+ * @file irgen.h
+ * @brief 中间代码（四元式）生成器接口
+ *
+ * 【数据结构】vector<Quad> code — 顺序四元式列表
+ * 【翻译模式】语法制导、后序表达式 + 回填式控制流（if/goto/label）
+ *
+ * @context 东南大学（SEU）编译原理专题实践 — Seu 编译器项目
+ */
+
+#ifndef IRGEN_H
+#define IRGEN_H
+
+#include "ast.h"
+#include "ir.h"
+#include <string>
+#include <unordered_map>
+
+/**
+ * @class IRGenerator
+ * @brief 将 AST 翻译为四元式中间表示并输出到文件
+ */
+class IRGenerator {
+public:
+    /** @brief 指定 IR 输出文件路径 */
+    IRGenerator(const std::string& outFile);
+    /** @brief 从 Program 根节点生成 IR */
+    void generate(ASTNode* root);
+    /** @brief 将四元式序列写入文件 */
+    void dump();
+    /** @brief 写入指定路径（用于保存优化前 IR） */
+    void dumpTo(const std::string& path);
+    /** @brief 获取四元式序列（供优化 pass 使用） */
+    std::vector<IRQuad>& getCode() { return code; }
+    const std::vector<IRQuad>& getCode() const { return code; }
+private:
+    std::string outFile;  ///< 输出文件路径
+    /** @brief 追加一条四元式 (op, arg1, arg2, result) */
+    void emit(const std::string& op, const std::string& a1,
+              const std::string& a2, const std::string& r);
+    /** @brief 访问表达式，返回存放结果的变量名或常量字符串 */
+    std::string visit(ASTNode* node);
+    /** @brief 生成二元运算四元式 */
+    std::string visitBinaryOp(BinaryOpNode* bin);
+    /** @brief 生成一元运算四元式 */
+    std::string visitUnaryOp(UnaryOpNode* un);
+    /** @brief 生成赋值四元式（含数组元素赋值 []=） */
+    std::string visitAssignOp(AssignOpNode* assign);
+    /** @brief 标识符直接返回变量名 */
+    std::string visitIdentifier(IdentifierNode* id);
+    /** @brief 整型字面量转为十进制字符串 */
+    std::string visitInteger(IntegerNode* num);
+    /** @brief 浮点字面量转为字符串 */
+    std::string visitFloat(FloatNode* num);
+    /** @brief 生成函数调用四元式 */
+    std::string visitCall(CallNode* call);
+    /** @brief 访问语句节点 */
+    void visitStmt(ASTNode* stmt);
+    int tempCounter;   ///< 临时变量编号计数器
+    int labelCounter;  ///< 标签编号计数器（与 temp 分离）
+    std::string currentFunc;  ///< 当前正在生成 IR 的函数名（用于标签说明）
+    std::unordered_map<std::string, std::string> labelDesc;  ///< 标签 → 语义说明
+
+    std::vector<IRQuad> code;  ///< 四元式序列
+
+    std::vector<std::string> breakTargetStack;     ///< break 目标（循环/ switch 出口）
+    std::vector<std::string> continueTargetStack;  ///< continue 目标（仅循环）
+
+    /** @brief 分配新的临时变量名 t0, t1, ... */
+    std::string newTemp();
+    /** @brief 分配新的标签名 L0, L1, ... */
+    std::string newLabel();
+    /** @brief 为标签生成带函数上下文的说明前缀 */
+    std::string labelContext(const std::string& meaning) const;
+    /** @brief 登记标签语义并输出 label 四元式 */
+    void emitLabel(const std::string& label, const std::string& desc);
+};
+
+#endif

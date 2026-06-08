@@ -1,0 +1,464 @@
+# Seu 编译器（第七版）
+
+东南大学编译原理专题实践项目：自研词法分析器生成器（**SeuLex**）、语法分析器生成器（**SeuYacc**），以及基于二者构建的 C 语言子集前端 **compiler.exe**，完成词法分析、语法分析、AST 构建、语义检查、中间代码生成与语法树可视化。
+
+源码中含较完整的中文注释（含算法设计、流程与数据结构说明），并支持 Doxygen 生成 API 文档。
+
+---
+
+## 目录
+
+1. [环境要求](#环境要求)
+2. [快速开始](#快速开始)
+3. [整体架构](#整体架构)
+4. [编译流程说明](#编译流程说明)
+5. [运行编译器](#运行编译器)
+6. [输出说明](#输出说明)
+7. [语法树可视化（Graphviz）](#语法树可视化graphviz)
+8. [生成 API 文档（Doxygen）](#生成-api-文档doxygen)
+9. [支持的源语言](#支持的源语言)
+10. [工具单独使用](#工具单独使用)
+11. [项目结构](#项目结构)
+12. [代码阅读顺序](#代码阅读顺序)
+13. [常见问题](#常见问题)
+14. [参考命令汇总](#参考命令汇总)
+
+---
+
+## 环境要求
+
+| 组件 | 说明 |
+|------|------|
+| **g++** | 支持 C++11，需已加入系统 PATH |
+| **Windows** | 推荐使用 `build.bat` 一键构建；也可在 MinGW / MSYS2 终端中手动执行其中命令 |
+| **Graphviz**（可选） | 将 `ast.dot` 渲染为 PNG/SVG；[下载地址](https://graphviz.org/download/)，安装后将 `bin` 目录加入 PATH |
+| **Doxygen**（可选） | 生成 HTML API 文档；[下载地址](https://www.doxygen.nl/download.html)，安装后加入 PATH |
+
+> 控制台仅输出各阶段简要进度；词法分析、语法分析、语法树的详细内容默认写入 **`output/out.txt`**（可用 `-o` 指定路径）。
+
+---
+
+## 快速开始
+
+在项目根目录打开命令行：
+
+```bat
+build.bat
+build\compiler.exe examples\test.c
+```
+
+构建成功后得到 `build\compiler.exe`。对 `examples\test.c` 编译后，`output/` 目录下通常会有：
+
+| 产物 | 说明 |
+|------|------|
+| `output/out.txt` | 词法/语法/语义详细报告 |
+| `output/output.ir` | 四元式中间代码 |
+| `output/ast.dot` | 语法树 Graphviz 描述（可渲染为 `ast.png`） |
+
+可选：
+
+```bat
+dot -Tpng output\ast.dot -o output\ast.png
+gen_docs.bat
+```
+
+---
+
+## 整体架构
+
+```
+                    ┌─────────────────────────────────────────┐
+                    │           构建期（build.bat）            │
+                    └─────────────────────────────────────────┘
+   grammar/lex.l ──SeuLex──► generated/lex.yy.cpp/h   grammar/yacc.y ──SeuYacc──► generated/yyparse.cpp
+        正则→NFA→DFA→代码生成                    First→LR(1)→LALR→分析表→yyparse
+
+                    ┌─────────────────────────────────────────┐
+                    │         运行期（compiler.exe）           │
+                    └─────────────────────────────────────────┘
+   源文件.c ──► 词法(yylex) ──► 语法(yyparse/AST) ──► 语义 ──► IR
+                      │              │                  │        │
+                      │              ├─ AST 文本打印     │        └─ output/output.ir
+                      │              └─ output/ast.dot  │
+                      └─ Token 列表（演示输出）          └─ 符号表/类型检查
+```
+
+| 模块 | 职责 | 核心算法 |
+|------|------|----------|
+| **SeuLex** | 读 `grammar/lex.l`，生成 `generated/lex.yy.cpp` | 正则解析、Thompson NFA、子集构造、DFA 最小化、表驱动最长匹配 |
+| **SeuYacc** | 读 `grammar/yacc.y`，生成 `generated/yyparse.cpp` | First 不动点、LR(1) DFA、LALR 合并、Action/Goto 填表、冲突消解 |
+| **前端** | `main_front` 驱动各阶段 | AST 遍历、作用域符号表、语法制导四元式生成 |
+
+---
+
+## 编译流程说明
+
+`build.bat` 按顺序完成：
+
+```
+┌─────────┐  grammar/lex.l  ┌─────────────────────┐
+│ SeuLex  │ ──────────────►  │ generated/lex.yy.*  │
+└─────────┘                  └──────────┬──────────┘
+                                        │
+┌─────────┐ grammar/yacc.y              │     ┌─────────────────────┐
+│ SeuYacc │ ────────────────────────────┼──►  │ generated/yyparse.cpp│
+└─────────┘  (--lalr)                   │     └──────────┬──────────┘
+                                        │                │
+                                        ▼                ▼
+                                   ┌─────────────────────┐
+                                   │  build\compiler.exe │
+                                   │  (main_front 等)    │
+                                   └─────────────────────┘
+```
+
+| 步骤 | 命令 / 动作 | 产物 |
+|------|-------------|------|
+| 1 | 编译并运行 `build\seulex.exe grammar\lex.l` | `generated/lex.yy.cpp`、`generated/lex.yy.h` |
+| 2 | 编译并运行 `build\seuyacc.exe --lalr grammar\yacc.y generated/yyparse.cpp` | `generated/yyparse.cpp`（LALR 分析表 + 归约代码） |
+| 3 | 编译各前端模块并链接 | `build\compiler.exe` |
+
+修改 **`grammar/lex.l`** 或 **`grammar/yacc.y`** 后，须重新运行 `build.bat`（会重新生成分析器并链接）。
+
+> **注意**：`grammar/lex.l` 规则区仅支持**整行** `/* ... */` 注释；勿在 pattern 或 `{ action }` 行尾加注释，否则 SeuLex 解析会失败。
+
+---
+
+## 运行编译器
+
+### 用法
+
+```text
+build\compiler.exe <源文件> [-o 报告.txt]
+```
+
+示例：
+
+```bat
+build\compiler.exe examples\test.c
+build\compiler.exe examples\test.c -o output\out.txt
+```
+
+### 处理阶段
+
+| 序号 | 阶段 | 控制台 | 详情输出 |
+|------|------|--------|----------|
+| 1 | 词法分析 | Token 数量摘要 | `output/out.txt` 中逐 Token 列表 |
+| 2 | 语法分析 | 成功/失败 | `output/out.txt` |
+| 3 | 语法树（文本） | 已写入提示 | `output/out.txt` |
+| 4 | 语法树（Graphviz） | 已导出提示 | `output/out.txt` + `output/ast.dot` |
+| 5 | 语义分析 | 通过 / 失败（含错误数） | `output/out.txt` 中符号表与类型检查 |
+| 6 | 中间代码 | 优化统计（仅语义通过时） | `output/output.ir`、`output/output_raw.ir` |
+
+语法分析失败时以非零退出码结束，不生成完整的 `output/ast.dot` / `output/output.ir`。  
+语义分析失败（含符号重定义、类型错误）时退出码为 **2**，**不生成 IR**。
+
+---
+
+## 输出说明
+
+### 控制台
+
+- 词法 / 语法 / 语法树阶段的一行摘要
+- 语义分析、中间代码完成提示
+
+### 文件
+
+| 文件 | 说明 |
+|------|------|
+| `output/out.txt` | 词法 Token 列表、语法分析结果、AST 文本树（默认，`-o` 可改路径） |
+| `output/output.ir` | 四元式中间代码（经优化） |
+| `output/output_raw.ir` | 优化前原始四元式 |
+| `output/ast.dot` | Graphviz DOT 格式 AST |
+| `output/ast.png` | AST 可视化（安装 Graphviz 后由编译器自动尝试生成） |
+
+### 中间代码优化
+
+生成 IR 后自动运行 **IROptimizer**（`ir_opt.cpp`），包含：
+
+| Pass | 说明 |
+|------|------|
+| 常量传播 / 折叠 | 基本块内替换已知常量，编译期求值纯算术/逻辑运算 |
+| 死代码消除 | 删除结果临时变量未被使用的纯计算四元式（含 `copy`） |
+| 循环不变式外提 | 将循环内仅依赖循环外变量的纯计算移至循环头之前 |
+
+控制台会输出各 pass 的优化计数；可对比 `output/output_raw.ir` 与 `output/output.ir`。
+
+### 中间代码常见操作符
+
+| 类别 | 操作符 |
+|------|--------|
+| 算术 | `+`、`-`、`*`、`/`、`neg` |
+| 关系与逻辑 | `==`、`!=`、`<`、`<=`、`>`、`>=`、`&&`、`||`、`not` |
+| 赋值 | `=`、`*=`（指针解引用赋值） |
+| 数组/指针 | `[]`（读）、`[]=`（写）、`&`（取址）、`*`（解引用） |
+| 结构体/联合体 | `.`、`.=`（成员读/写）、`->`、`->=`（指针成员读/写） |
+| 控制流 | `if`、`goto`、`label` |
+| 其它 | `copy`（一元拷贝，可被 DCE 消除） |
+| 调用 | `param`（传实参/接形参）、`call`（含函数指针间接调用） |
+
+---
+
+## 语法树可视化（Graphviz）
+
+语法分析成功后会自动生成 **`output/ast.dot`**（由 `ast_dot.cpp` 导出）。
+
+### 本地渲染
+
+```bat
+dot -Tpng output\ast.dot -o output\ast.png
+dot -Tsvg output\ast.dot -o output\ast.svg
+```
+
+### 在线预览
+
+将 `output/ast.dot` 复制到 [Graphviz Online](https://dreampuf.github.io/GraphvizOnline/)。
+
+### 节点含义
+
+- 方框：AST 结点类型（`Program`、`FuncDef`、`BinaryOp` 等）  
+- 有向边：父子关系  
+- 标签可含标识符名、常量值、行号等  
+
+---
+
+## 生成 API 文档（Doxygen）
+
+项目已配置 `config/Doxyfile` 与 `gen_docs.bat`（在项目根目录执行），可扫描手写源码（自动排除 `generated/`）生成 HTML 文档。
+
+### 安装
+
+1. 安装 [Doxygen](https://www.doxygen.nl/download.html) 并加入 PATH  
+2. （可选）安装 Graphviz，用于类图  
+
+### 生成与查看
+
+```bat
+gen_docs.bat
+```
+
+成功后打开 **`docs/html/index.html`**。源码中的 `@file`、`@class`、`@brief` 等注释会出现在文档中。
+
+---
+
+## 支持的源语言
+
+C 语言 **MiniC 子集**，文法见 `grammar/yacc.y`，词法见 `grammar/lex.l`；终结符定义与 `include/common_defs.h` 一致。
+
+### 主要特性
+
+| 类别 | 支持内容 |
+|------|----------|
+| 类型 | `int`、`char`、`float`、`double`、`void` |
+| 聚合类型 | `struct`、`union` 定义与成员访问（`.` / `->`） |
+| 指针 | 声明、取址 `&`、解引用 `*`、指针赋值、`*=` |
+| 数组 | 一维数组、指针/数组下标 |
+| 函数 | 多参数、递归、**函数指针**与间接调用 |
+| 语句 | 复合语句、`if`/`else`、`while`、`for`、`switch`/`case`/`default`、`return`、`break`、`continue` |
+| 表达式 | 赋值、逻辑与/或、相等/关系、加减乘除、一元 `!`/`-`/`&`/`*`、调用、下标、成员访问 |
+| 字面量 | 整型、浮点、字符串（部分场景） |
+
+### 示例
+
+`examples/test.c`：结构体/联合体/指针/函数指针/`switch`/`for` 等综合示例。
+
+### 限制
+
+- 词法器仅保留 MiniC 所需关键字与运算符（见 `common_defs.h`）；未支持的关键字（如 `goto`）会当作 `IDENTIFIER`  
+- 不支持预处理、typedef、多维数组、变参、枚举等完整 C 特性  
+- 语义规则见 `typecheck.cpp`（类型检查与隐式转换策略以当前实现为准）  
+
+---
+
+## 工具单独使用
+
+需先通过 `build.bat` 前段生成 `build\seulex.exe` / `build\seuyacc.exe`。
+
+### SeuLex
+
+```bat
+build\seulex.exe grammar\lex.l
+```
+
+| 项目 | 说明 |
+|------|------|
+| 输入 | Flex 风格 `grammar/lex.l`（`%%` 分隔） |
+| 输出 | `generated/lex.yy.cpp`、`generated/lex.yy.h` |
+| 流水线 | 正则 AST → Thompson NFA → 子集构造 DFA → 最小化 → 代码生成 |
+
+### SeuYacc
+
+```bat
+seuyacc.exe [选项] <输入.y> <输出.cpp>
+```
+
+| 选项 | 说明 |
+|------|------|
+| `-h`, `--help` | 帮助 |
+| `-v`, `--verbose` | 调试输出 |
+| `--lalr` | LALR(1) 合并（`build.bat` 默认） |
+| `--print-first` | 打印 First 集 |
+| `--print-dfa` | 打印 LR 状态机 |
+| `--print-table` | 打印分析表 |
+
+示例：
+
+```bat
+build\seuyacc.exe --lalr grammar\yacc.y generated/yyparse.cpp
+build\seuyacc.exe --lalr --print-dfa grammar\yacc.y generated/yyparse.cpp
+```
+
+---
+
+## 项目结构
+
+```
+compiler（第七版）/
+├── README.md              # 本说明
+├── build.bat              # 一键构建
+├── gen_docs.bat           # Doxygen 生成文档
+│
+├── grammar/               # 文法定义（生成器输入）
+│   ├── lex.l              # 词法规则（SeuLex 输入）
+│   └── yacc.y             # 语法与 AST 动作（SeuYacc 输入）
+│
+├── examples/              # 示例源程序
+│   ├── test.c             # 综合特性示例
+│   └── redef.c            # 语义错误示例（符号重定义）
+│
+├── config/                # 工具配置
+│   └── Doxyfile
+│
+├── output/                # 编译器运行产物（.gitignore 忽略内容，保留 .gitkeep）
+│
+├── include/               # 跨模块公共头文件
+│   ├── common_defs.h      # TokenType、YYSTYPE、宏
+│   ├── token_names.h      # tokenDisplayName（词法 dump）
+│   ├── seulex.h
+│   └── ast.h              # AST 节点定义
+│
+├── SeuLex/                # 词法生成器
+├── SeuYacc/               # 语法生成器
+├── Frontend/              # 编译器前端
+│   ├── main_front.cpp     # 驱动词法/语法/语义/IR
+│   ├── ast_format.*       # AST 共享格式化（文本树 / DOT 共用）
+│   ├── ast_printer.*      # AST 文本树
+│   ├── ast_dot.*          # AST Graphviz 导出
+│   ├── token_names.cpp    # 终结符显示名
+│   └── typecheck.* / irgen.* / ir_opt.* / symbol.* / type.*
+├── generated/             # 【自动生成，已 .gitignore，build.bat 重建】
+├── build/                 # 可执行文件与 .o（seulex、seuyacc、compiler）
+└── docs/html/             # Doxygen 输出（运行 gen_docs.bat 后）
+```
+
+---
+
+## 代码阅读顺序
+
+建议**按数据流**阅读，而非按文件名排序。各核心 `.cpp` 文件头有「算法设计 / 流程 / 数据结构」说明。
+
+### 0. 全局（约 30 分钟）
+
+1. `README.md`（本文）  
+2. `build.bat`  
+3. `examples/test.c`  
+
+### 1. 公共约定（约 20 分钟）
+
+4. `common_defs.h`  
+5. `seulex.h`  
+6. `yacc_common.h`  
+
+### 2. SeuLex 流水线（约 2–3 小时）
+
+7. `lex_common.h` → 8. `grammar/lex.l` → 9. `lex_main.cpp`  
+10. `LexFileParser.cpp` → 11. `RegExpParser.cpp` → 12. `NFAConstructor.cpp`  
+13. `DFAConverter.cpp` → 14. `DFAMinimizer.cpp` → 15. `CodeGenerator.cpp`  
+
+可选对照：`generated/lex.yy.cpp` 中的 `nextState`、`yylex`。
+
+### 3. SeuYacc 流水线（约 3–4 小时）
+
+16. `yacc_main.cpp` → 17. `grammar.cpp` → 18. `first_set.cpp`  
+19. `lr1_dfa.cpp` → 20. `lalr.cpp` → 21. `parsing_table.cpp` → 22. `code_gen.cpp`  
+23. `common.cpp`  
+
+可选对照：`generated/yyparse.cpp` 中的 `action_table`、`yyparse` 主循环。
+
+### 4. 文法与 AST（约 2 小时）
+
+24. `grammar/yacc.y` → 25. `ast.h` → 26. `type.h`、`type.cpp` → 27. `seulex.h`  
+
+### 5. 编译器前端（约 2 小时）
+
+28. `main_front.cpp` → 29. `token_names.h/cpp` → 30. `symbol.h/cpp` → 31. `typecheck.h/cpp`  
+32. `irgen.h/cpp` → 33. `ir_opt.h/cpp` → 34. `ast_format.h/cpp` → 35. `ast_printer.cpp` → 36. `ast_dot.cpp`  
+
+边读边运行：`build\compiler.exe examples\test.c`，对照 `output/output.ir`、`output/ast.dot` / `output/ast.png`。
+
+### 时间紧时的最短路径（12 个文件）
+
+`README` → `build.bat` → `common_defs.h` → `yacc_common.h` → `LexFileParser.cpp`（`processRules`）→ `DFAConverter.cpp` → `CodeGenerator.cpp` → `yacc_main.cpp` → `first_set.cpp` + `lr1_dfa.cpp`（文件头）→ `parsing_table.cpp` + `code_gen.cpp`（文件头）→ `yacc.y` + `ast.h` → `main_front.cpp` + `typecheck.cpp` + `irgen.cpp`。
+
+---
+
+## 常见问题
+
+### `build.bat` 找不到 g++
+
+安装 MinGW-w64 或 MSYS2，将 `g++.exe` 所在目录加入 `PATH`。
+
+### SeuLex 报错 `invalid action code`
+
+检查 `grammar/lex.l` 规则区是否在 pattern/action **行尾**写了注释；仅允许**整行** `/* ... */` 注释。
+
+### 语法分析失败
+
+- 确认源程序在 `grammar/yacc.y` 子集内  
+- 查看 `yylineno` 报错行  
+- 检查括号、分号与声明顺序  
+
+### 没有 `output/ast.dot` 或 `output/output.ir`
+
+仅语法分析成功且存在 `astRoot` 时生成。
+
+### `dot` 不是内部或外部命令
+
+未安装 Graphviz；可用在线工具打开 `output/ast.dot`。
+
+### 修改 `grammar/yacc.y` 后链接错误
+
+重新运行完整 `build.bat`，确保 `generated/yyparse.cpp` 与 `build/yyparse.o` 已更新。
+
+### `doxygen` 不是内部或外部命令
+
+安装 Doxygen 并配置 PATH，或仅用 IDE 阅读源码注释。
+
+### 中文乱码
+
+使用 Windows Terminal，或 `chcp 65001`。`main_front.o` 编译时已指定 UTF-8。
+
+---
+
+## 参考命令汇总
+
+```bat
+:: 构建完整编译器
+build.bat
+
+:: 编译示例并查看各阶段输出
+build\compiler.exe examples\test.c
+
+:: 语法树渲染（需 Graphviz）
+dot -Tpng output\ast.dot -o output\ast.png
+
+:: 生成 API 文档（需 Doxygen）
+gen_docs.bat
+
+:: 仅重新生成词法/语法分析器
+build\seulex.exe grammar\lex.l
+build\seuyacc.exe --lalr grammar\yacc.y generated\yyparse.cpp
+```
+
+---
+
+*东南大学编译原理专题实践 — Seu 编译器第七版*

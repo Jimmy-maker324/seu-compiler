@@ -1,0 +1,15 @@
+# 行尾：仓库内统一 LF，检出时按平台转换（Windows 下 .bat 保持 CRLF）
+* text=auto
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.c text eol=lf
+*.cpp text eol=lf
+*.h text eol=lf
+*.l text eol=lf
+*.y text eol=lf
+*.md text eol=lf
+*.gitignore text eol=lf
+*.gitattributes text eol=lf
+Doxyfile text eol=lf
