@@ -1,6 +1,6 @@
 /**
  * @file token_names.h
- * @brief 终结符编号 → 可读名称（词法 dump、调试输出共用）
+ * @brief 终结符编号 → 可读名称（数据来自 include/tokens.def）
  */
 
 #ifndef TOKEN_NAMES_H

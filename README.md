@@ -178,10 +178,13 @@ build\compiler.exe examples\test.c -o output\out.txt
 | Pass | 说明 |
 |------|------|
 | 常量传播 / 折叠 | 基本块内替换已知常量，编译期求值纯算术/逻辑运算 |
+| 公共子表达式消除（CSE） | 基本块内复用相同 `(op, arg1, arg2)` 的纯计算结果 |
 | 死代码消除 | 删除结果临时变量未被使用的纯计算四元式（含 `copy`） |
 | 循环不变式外提 | 将循环内仅依赖循环外变量的纯计算移至循环头之前 |
 
 控制台会输出各 pass 的优化计数；可对比 `output/output_raw.ir` 与 `output/output.ir`。
+
+新增终结符时只需编辑 **`include/tokens.def`**，`common_defs.h`、`token_names.cpp` 与 `SeuYacc/token_registry.inl` 会自动同步。
 
 ### 中间代码常见操作符
 
@@ -333,6 +336,7 @@ compiler（第七版）/
 │
 ├── include/               # 跨模块公共头文件
 │   ├── common_defs.h      # TokenType、YYSTYPE、宏
+│   ├── tokens.def         # 终结符主表（enum / 显示名 / SeuYacc 共用）
 │   ├── token_names.h      # tokenDisplayName（词法 dump）
 │   ├── seulex.h
 │   └── ast.h              # AST 节点定义

@@ -217,8 +217,8 @@ int main(int argc, char** argv) {
         printf("代码优化... ");
         IROptimizer opt;
         IROptStats optStats = opt.run(irgen.getCode());
-        printf("常量折叠 %d, 传播 %d, 消除 %d, 外提 %d\n",
-               optStats.constFold, optStats.constProp,
+        printf("常量折叠 %d, 传播 %d, CSE %d, 消除 %d, 外提 %d\n",
+               optStats.constFold, optStats.constProp, optStats.cseElim,
                optStats.deadRemoved, optStats.hoisted);
         irgen.dump();
 

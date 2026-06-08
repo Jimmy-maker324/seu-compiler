@@ -12,6 +12,7 @@
 struct IROptStats {
     int constFold = 0;
     int constProp = 0;
+    int cseElim = 0;
     int deadRemoved = 0;
     int hoisted = 0;
 };
@@ -23,6 +24,7 @@ public:
 
 private:
     bool constantPropagationAndFolding(std::vector<IRQuad>& code, IROptStats& stats);
+    bool commonSubexpressionElimination(std::vector<IRQuad>& code, IROptStats& stats);
     bool deadCodeElimination(std::vector<IRQuad>& code, IROptStats& stats);
     bool loopInvariantCodeMotion(std::vector<IRQuad>& code, IROptStats& stats);
 };

@@ -222,6 +222,32 @@ bool quadIsHoistableInvariant(const IRQuad& q,
         && operandInvariant(q.arg2, loopDefs, hoistedTemps);
 }
 
+std::string resolveRepl(const std::string& s,
+                        const std::unordered_map<std::string, std::string>& repl) {
+    auto it = repl.find(s);
+    return it != repl.end() ? it->second : s;
+}
+
+std::string exprKey(const IRQuad& q) {
+    return q.op + '\x01' + q.arg1 + '\x01' + q.arg2;
+}
+
+void invalidateExprsUsing(std::unordered_map<std::string, std::string>& expr2res,
+                          const std::string& var) {
+    if (var.empty()) return;
+    for (auto it = expr2res.begin(); it != expr2res.end(); ) {
+        size_t p1 = it->first.find('\x01');
+        if (p1 == std::string::npos) { ++it; continue; }
+        size_t p2 = it->first.find('\x01', p1 + 1);
+        std::string a1 = it->first.substr(p1 + 1, p2 - p1 - 1);
+        std::string a2 = (p2 != std::string::npos) ? it->first.substr(p2 + 1) : "";
+        if (a1 == var || a2 == var)
+            it = expr2res.erase(it);
+        else
+            ++it;
+    }
+}
+
 } // namespace
 
 IROptStats IROptimizer::run(std::vector<IRQuad>& code, int maxRound) {
@@ -229,6 +255,7 @@ IROptStats IROptimizer::run(std::vector<IRQuad>& code, int maxRound) {
     for (int r = 0; r < maxRound; ++r) {
         bool changed = false;
         if (constantPropagationAndFolding(code, total)) changed = true;
+        if (commonSubexpressionElimination(code, total)) changed = true;
         if (deadCodeElimination(code, total)) changed = true;
         if (loopInvariantCodeMotion(code, total)) changed = true;
         if (!changed) break;
@@ -296,6 +323,61 @@ bool IROptimizer::constantPropagationAndFolding(std::vector<IRQuad>& code,
         }
     }
     return stats.constFold > foldBefore || stats.constProp > propBefore;
+}
+
+bool IROptimizer::commonSubexpressionElimination(std::vector<IRQuad>& code,
+                                                 IROptStats& stats) {
+    int before = stats.cseElim;
+    auto blocks = splitBasicBlocks(code);
+    std::unordered_map<std::string, std::string> repl;
+    std::vector<bool> remove(code.size(), false);
+
+    for (const BasicBlock& bb : blocks) {
+        std::unordered_map<std::string, std::string> expr2res;
+        for (size_t i = bb.start; i <= bb.end && i < code.size(); ++i) {
+            IRQuad& q = code[i];
+            if (q.op == "label") {
+                expr2res.clear();
+                continue;
+            }
+
+            q.arg1 = resolveRepl(q.arg1, repl);
+            q.arg2 = resolveRepl(q.arg2, repl);
+
+            if (isPureComputeOp(q.op) && irIsTemp(q.result)) {
+                std::string key = exprKey(q);
+                auto it = expr2res.find(key);
+                if (it != expr2res.end()) {
+                    repl[q.result] = it->second;
+                    remove[i] = true;
+                    ++stats.cseElim;
+                } else {
+                    expr2res[key] = q.result;
+                }
+            } else if (q.op == "=") {
+                invalidateExprsUsing(expr2res, q.result);
+                if (!irIsConstant(q.arg1))
+                    invalidateExprsUsing(expr2res, q.arg1);
+            } else if (hasSideEffect(q)) {
+                expr2res.clear();
+            }
+        }
+    }
+
+    for (IRQuad& q : code) {
+        q.arg1 = resolveRepl(q.arg1, repl);
+        q.arg2 = resolveRepl(q.arg2, repl);
+        if (rhsInResultField(q.op))
+            q.result = resolveRepl(q.result, repl);
+    }
+
+    std::vector<IRQuad> out;
+    out.reserve(code.size());
+    for (size_t i = 0; i < code.size(); ++i) {
+        if (!remove[i]) out.push_back(code[i]);
+    }
+    code.swap(out);
+    return stats.cseElim > before;
 }
 
 bool IROptimizer::deadCodeElimination(std::vector<IRQuad>& code,
