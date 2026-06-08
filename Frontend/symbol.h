@@ -23,11 +23,10 @@
 struct Symbol {
     std::string name;   ///< 标识符名
     Type* type;         ///< 语义类型
-    int offset;         ///< 栈帧偏移（供后端代码生成使用，前端暂未赋值）
     bool isFunction;    ///< true 表示函数符号，false 表示变量
     /** @brief 构造符号表项 */
     Symbol(const std::string& n, Type* t, bool isFunc = false)
-        : name(n), type(t), offset(0), isFunction(isFunc) {}
+        : name(n), type(t), isFunction(isFunc) {}
 };
 
 /**

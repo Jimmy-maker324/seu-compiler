@@ -1,10 +1,10 @@
-# Doxyfile for Seu Compiler（第七版）
+# Doxyfile for Seu Compiler
 # Usage: gen_docs.bat  或  doxygen config\Doxyfile（在项目根目录执行）
 # Output: docs/html/index.html
 
-PROJECT_NAME           = "Seu 编译器（第七版）"
+PROJECT_NAME           = "Seu 编译器"
 PROJECT_BRIEF          = "东南大学编译原理专题实践 — 词法/语法生成器与 C 子集前端"
-PROJECT_NUMBER         = "7.0"
+PROJECT_NUMBER         = "1.0"
 OUTPUT_DIRECTORY       = docs
 CREATE_SUBDIRS         = NO
 OUTPUT_LANGUAGE        = Chinese

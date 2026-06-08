@@ -33,6 +33,10 @@ private:
     std::ostringstream typeLog_;
     int scopeDepth_ = 0;
     int errorCount_ = 0;
+    int loopDepth_ = 0;
+    int switchDepth_ = 0;
+    /** @brief 函数体最外层 CompoundStmt 与形参共享作用域，不再嵌套开 scope */
+    bool skipCompoundScope_ = false;
 
     void enterScopeLogged();
     void leaveScopeLogged();
@@ -40,7 +44,7 @@ private:
     void logTypeCheck(const std::string& msg);
     /** @brief 访问表达式节点，返回其类型 */
     Type* visit(ASTNode* node);
-    /** @brief 检查二元运算：操作数须为 int，结果为 int */
+    /** @brief 检查二元运算：数值类型提升，结果为 int 或浮点 */
     Type* visitBinaryOp(BinaryOpNode* bin);
     /** @brief 检查一元运算（如逻辑非） */
     Type* visitUnaryOp(UnaryOpNode* un);

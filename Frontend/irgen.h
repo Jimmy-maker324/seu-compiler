@@ -15,6 +15,7 @@
 #include "ir.h"
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 /**
  * @class IRGenerator
@@ -46,7 +47,7 @@ private:
     std::string visitUnaryOp(UnaryOpNode* un);
     /** @brief 生成赋值四元式（含数组元素赋值 []=） */
     std::string visitAssignOp(AssignOpNode* assign);
-    /** @brief 标识符直接返回变量名 */
+    /** @brief 标识符解析为当前作用域下的 IR 变量名 */
     std::string visitIdentifier(IdentifierNode* id);
     /** @brief 整型字面量转为十进制字符串 */
     std::string visitInteger(IntegerNode* num);
@@ -65,6 +66,18 @@ private:
 
     std::vector<std::string> breakTargetStack;     ///< break 目标（循环/ switch 出口）
     std::vector<std::string> continueTargetStack;  ///< continue 目标（仅循环）
+
+    /** @brief 作用域栈：每层 map 源变量名 → 唯一 IR 名（支持块遮蔽） */
+    std::vector<std::unordered_map<std::string, std::string>> scopeStack_;
+    int varUidCounter_ = 0;          ///< 局部变量 IR 名后缀计数
+    bool skipCompoundScope_ = false; ///< 函数体最外层块不再嵌套开 scope
+
+    void pushScope();
+    void popScope();
+    /** @brief 在当前作用域登记变量，返回其 IR 名 */
+    std::string bindVar(const std::string& srcName);
+    /** @brief 沿作用域链查找变量 IR 名；未找到则返回源名（全局/函数名） */
+    std::string resolveVar(const std::string& srcName) const;
 
     /** @brief 分配新的临时变量名 t0, t1, ... */
     std::string newTemp();

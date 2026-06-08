@@ -11,11 +11,11 @@
  * 【visitStmt 流程（声明/语句）】
  *   VarDecl：查重 → addSymbol
  *   FuncDef：登记函数类型 → enterScope → 处理形参 → 检查 compound → leaveScope
- *   CompoundStmt：enterScope → 子节点 → leaveScope
+ *   CompoundStmt：enterScope → 子节点 → leaveScope（函数体最外层块与形参同 scope）
  *   If/While/Return：递归检查条件与分支类型
  *
  * 【visit 表达式规则】
- *   二元运算：两侧须 isInt()
+ *   二元运算：数值类型提升
  *   赋值：左值 visitLvalue，类型与右值一致
  *   Call：查符号 isFunction，实参个数与 paramTypes 匹配
  *   下标：数组/指针 base，下标须 int
@@ -29,6 +29,7 @@
 #include "common_defs.h"
 #include <iostream>
 #include <iomanip>
+#include <set>
 
 /**
  * @brief 结构等价地比较两个类型是否相同
@@ -80,10 +81,8 @@ static Type* promoteNumeric(Type* a, Type* b) {
 static bool assignCompatible(Type* lhs, Type* rhs) {
     if (type_equal(lhs, rhs)) return true;
     if (lhs->kind == TypeKind::Pointer) {
-        if (type_equal(lhs, rhs)) return true;
-        if (rhs->kind == TypeKind::Int) return true;
         if (rhs->kind == TypeKind::Function)
-            return type_equal(((PointerType*)lhs)->base, rhs);
+            return type_equal(static_cast<PointerType*>(lhs)->base, rhs);
         return false;
     }
     if (!lhs->isNumeric() || !rhs->isNumeric()) return false;
@@ -467,9 +466,17 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
     if (!stmt) return;
     switch (stmt->kind) {
         case NodeKind::CompoundStmt: {
-            auto* block = (MultiNode*)stmt;
-            for (auto& child : block->children)
-                visitStmt(child.get());
+            auto* block = static_cast<MultiNode*>(stmt);
+            if (skipCompoundScope_) {
+                skipCompoundScope_ = false;
+                for (auto& child : block->children)
+                    visitStmt(child.get());
+            } else {
+                enterScopeLogged();
+                for (auto& child : block->children)
+                    visitStmt(child.get());
+                leaveScopeLogged();
+            }
             break;
         }
         case NodeKind::VarDecl: {
@@ -555,39 +562,60 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
             break;
         }
         case NodeKind::WhileStmt: {
-            auto* whileNode = (MultiNode*)stmt;
+            auto* whileNode = static_cast<MultiNode*>(stmt);
             if (whileNode->children.size() >= 1)
                 visit(whileNode->children[0].get());
+            ++loopDepth_;
             if (whileNode->children.size() >= 2)
                 visitStmt(whileNode->children[1].get());
+            --loopDepth_;
             break;
         }
         case NodeKind::ForStmt: {
-            auto* forNode = (MultiNode*)stmt;
+            auto* forNode = static_cast<MultiNode*>(stmt);
             if (forNode->children.size() >= 1 && forNode->children[0])
                 visitStmt(forNode->children[0].get());
+            ++loopDepth_;
             if (forNode->children.size() >= 2 && forNode->children[1])
                 visit(forNode->children[1].get());
             if (forNode->children.size() >= 3 && forNode->children[2])
                 visitStmt(forNode->children[2].get());
             if (forNode->children.size() >= 4 && forNode->children[3])
                 visitStmt(forNode->children[3].get());
+            --loopDepth_;
             break;
         }
         case NodeKind::SwitchStmt: {
-            auto* sw = (MultiNode*)stmt;
+            auto* sw = static_cast<MultiNode*>(stmt);
             Type* swType = visit(sw->children[0].get());
             if (!swType->isInt()) {
                 error("switch expression must be int", sw->line);
             }
+            std::set<int> caseLabels;
+            ++switchDepth_;
             for (size_t i = 1; i < sw->children.size(); ++i) {
                 auto* clause = static_cast<MultiNode*>(sw->children[i].get());
+                if (clause->kind == NodeKind::CaseStmt) {
+                    int val = static_cast<IntegerNode*>(clause->children[0].get())->value;
+                    if (!caseLabels.insert(val).second) {
+                        error("duplicate case value: " + std::to_string(val), clause->line);
+                    }
+                }
                 size_t start = (clause->kind == NodeKind::CaseStmt) ? 1 : 0;
                 for (size_t j = start; j < clause->children.size(); ++j)
                     visitStmt(clause->children[j].get());
             }
+            --switchDepth_;
             break;
         }
+        case NodeKind::BreakStmt:
+            if (loopDepth_ == 0 && switchDepth_ == 0)
+                error("'break' outside loop or switch", stmt->line);
+            break;
+        case NodeKind::ContinueStmt:
+            if (loopDepth_ == 0)
+                error("'continue' outside loop", stmt->line);
+            break;
         case NodeKind::ReturnStmt: {
             auto* retNode = (MultiNode*)stmt;
             if (!retNode->children.empty())
@@ -630,8 +658,10 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
                     }
                 }
             }
-            if (bodyIdx < func->children.size())
+            if (bodyIdx < func->children.size()) {
+                skipCompoundScope_ = true;
                 visitStmt(func->children[bodyIdx].get());
+            }
             leaveScopeLogged();
             break;
         }

@@ -113,6 +113,17 @@ static Type* buildFieldType(Type* base, FieldDeclarator* fd) {
     return t;
 }
 
+/** 构造 VarDecl：children 为 Type、Identifier，可选初值表达式 */
+static MultiNode* makeVarDeclNode(Type* type, const std::string& name, int line,
+                                  ASTNode* initExpr = nullptr) {
+    auto* node = new MultiNode(NodeKind::VarDecl, line);
+    node->addChild(std::unique_ptr<ASTNode>(new TypeNode(type, line)));
+    node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, line)));
+    if (initExpr)
+        node->addChild(std::unique_ptr<ASTNode>(initExpr));
+    return node;
+}
+
 %}
 
 /* 语义值联合体：与 common_defs.h 中 YYSTYPE 字段对应 */
@@ -496,6 +507,83 @@ var_decl:
         free($2.sval);
         free($4.sval);
         $$.ptr = node;
+    }
+    | T_INT T_IDENTIFIER '=' expression ';' {
+        std::string name($2.sval);
+        $$.ptr = makeVarDeclNode(BasicType::Int, name, yylineno, grab($4.ptr));
+        free($2.sval);
+    }
+    | T_INT T_IDENTIFIER '[' T_CONSTANT ']' '=' expression ';' {
+        std::string name($2.sval);
+        auto* arrType = new ArrayType(BasicType::Int, $4.ival);
+        $$.ptr = makeVarDeclNode(arrType, name, yylineno, grab($7.ptr));
+        free($2.sval);
+    }
+    | T_FLOAT T_IDENTIFIER '=' expression ';' {
+        std::string name($2.sval);
+        $$.ptr = makeVarDeclNode(BasicType::Float, name, yylineno, grab($4.ptr));
+        free($2.sval);
+    }
+    | T_DOUBLE T_IDENTIFIER '=' expression ';' {
+        std::string name($2.sval);
+        $$.ptr = makeVarDeclNode(BasicType::Double, name, yylineno, grab($4.ptr));
+        free($2.sval);
+    }
+    | T_CHAR T_IDENTIFIER '=' expression ';' {
+        std::string name($2.sval);
+        $$.ptr = makeVarDeclNode(BasicType::Char, name, yylineno, grab($4.ptr));
+        free($2.sval);
+    }
+    | T_INT '*' T_IDENTIFIER '=' expression ';' {
+        std::string name($3.sval);
+        $$.ptr = makeVarDeclNode(new PointerType(BasicType::Int), name, yylineno, grab($5.ptr));
+        free($3.sval);
+    }
+    | T_FLOAT '*' T_IDENTIFIER '=' expression ';' {
+        std::string name($3.sval);
+        $$.ptr = makeVarDeclNode(new PointerType(BasicType::Float), name, yylineno, grab($5.ptr));
+        free($3.sval);
+    }
+    | T_CHAR '*' T_IDENTIFIER '=' expression ';' {
+        std::string name($3.sval);
+        $$.ptr = makeVarDeclNode(new PointerType(BasicType::Char), name, yylineno, grab($5.ptr));
+        free($3.sval);
+    }
+    | T_STRUCT T_IDENTIFIER T_IDENTIFIER '=' expression ';' {
+        std::string tag($2.sval);
+        std::string name($3.sval);
+        StructType* st = lookupStructType(tag);
+        if (!st) st = new StructType(tag);
+        $$.ptr = makeVarDeclNode(st, name, yylineno, grab($5.ptr));
+        free($2.sval);
+        free($3.sval);
+    }
+    | T_STRUCT T_IDENTIFIER '*' T_IDENTIFIER '=' expression ';' {
+        std::string tag($2.sval);
+        std::string name($4.sval);
+        StructType* st = lookupStructType(tag);
+        if (!st) st = new StructType(tag);
+        $$.ptr = makeVarDeclNode(new PointerType(st), name, yylineno, grab($6.ptr));
+        free($2.sval);
+        free($4.sval);
+    }
+    | T_UNION T_IDENTIFIER T_IDENTIFIER '=' expression ';' {
+        std::string tag($2.sval);
+        std::string name($3.sval);
+        UnionType* ut = lookupUnionType(tag);
+        if (!ut) ut = new UnionType(tag);
+        $$.ptr = makeVarDeclNode(ut, name, yylineno, grab($5.ptr));
+        free($2.sval);
+        free($3.sval);
+    }
+    | T_UNION T_IDENTIFIER '*' T_IDENTIFIER '=' expression ';' {
+        std::string tag($2.sval);
+        std::string name($4.sval);
+        UnionType* ut = lookupUnionType(tag);
+        if (!ut) ut = new UnionType(tag);
+        $$.ptr = makeVarDeclNode(new PointerType(ut), name, yylineno, grab($6.ptr));
+        free($2.sval);
+        free($4.sval);
     }
     ;
 

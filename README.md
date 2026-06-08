@@ -1,4 +1,4 @@
-# Seu 编译器（第七版）
+# Seu 编译器
 
 东南大学编译原理专题实践项目：自研词法分析器生成器（**SeuLex**）、语法分析器生成器（**SeuYacc**），以及基于二者构建的 C 语言子集前端 **compiler.exe**，完成词法分析、语法分析、AST 构建、语义检查、中间代码生成与语法树可视化。
 
@@ -199,6 +199,8 @@ build\compiler.exe examples\test.c -o output\out.txt
 | 其它 | `copy`（一元拷贝，可被 DCE 消除） |
 | 调用 | `param`（传实参/接形参）、`call`（含函数指针间接调用） |
 
+**局部变量命名**：IR 生成时维护作用域栈；全局变量保留源名，函数形参与局部变量（含块内声明）映射为唯一 IR 名（如 `x_0`、`x_1`），内层块遮蔽外层同名变量时各自独立，不会互相覆盖。
+
 ---
 
 ## 语法树可视化（Graphviz）
@@ -257,18 +259,38 @@ C 语言 **MiniC 子集**，文法见 `grammar/yacc.y`，词法见 `grammar/lex.
 | 数组 | 一维数组、指针/数组下标 |
 | 函数 | 多参数、递归、**函数指针**与间接调用 |
 | 语句 | 复合语句、`if`/`else`、`while`、`for`、`switch`/`case`/`default`、`return`、`break`、`continue` |
+| 声明 | 块内/全局变量声明，支持 `type id = expr` 带初值形式 |
 | 表达式 | 赋值、逻辑与/或、相等/关系、加减乘除、一元 `!`/`-`/`&`/`*`、调用、下标、成员访问 |
 | 字面量 | 整型、浮点、字符串（部分场景） |
 
 ### 示例
 
-`examples/test.c`：结构体/联合体/指针/函数指针/`switch`/`for` 等综合示例。
+| 文件 | 说明 |
+|------|------|
+| `examples/test.c` | 结构体/联合体/指针/函数指针/`switch`/`for` 等综合示例 |
+| `examples/block_scope.c` | 块作用域与变量遮蔽（语义通过，exit 0） |
+| `examples/redef.c` | 符号重定义（语义失败，exit 2） |
+| `examples/bad_break.c` | 循环外 `break`（语义失败，exit 2） |
+| `examples/bad_continue.c` | 循环外 `continue`（语义失败，exit 2） |
+| `examples/dup_case.c` | `switch` 重复 `case`（语义失败，exit 2） |
+| `examples/syntax_err.c` | 语法错误（exit 1） |
 
 ### 限制
 
 - 词法器仅保留 MiniC 所需关键字与运算符（见 `common_defs.h`）；未支持的关键字（如 `goto`）会当作 `IDENTIFIER`  
 - 不支持预处理、typedef、多维数组、变参、枚举等完整 C 特性  
 - 语义规则见 `typecheck.cpp`（类型检查与隐式转换策略以当前实现为准）  
+
+### 语义检查（节选）
+
+| 规则 | 说明 |
+|------|------|
+| 块作用域 | 复合语句 `{ ... }` 进入新作用域；内层变量可遮蔽外层同名符号 |
+| 函数体 | 形参与函数体最外层块共享同一作用域（与 C 一致） |
+| 重定义 | 同一作用域内重复声明同一标识符报错 |
+| `break` / `continue` | 分别须在循环/`switch` 内、循环内使用 |
+| `switch` | `case` 标签值不可重复 |
+| 赋值 | 数值类型间允许隐式转换；指针仅接受同类型或函数指针兼容，**不接受**整型赋给指针 |
 
 ---
 
@@ -315,7 +337,7 @@ build\seuyacc.exe --lalr --print-dfa grammar\yacc.y generated/yyparse.cpp
 ## 项目结构
 
 ```
-compiler（第七版）/
+seu-compiler/
 ├── README.md              # 本说明
 ├── build.bat              # 一键构建
 ├── gen_docs.bat           # Doxygen 生成文档
@@ -326,8 +348,12 @@ compiler（第七版）/
 │
 ├── examples/              # 示例源程序
 │   ├── test.c             # 综合特性示例
-│   ├── redef.c            # 语义错误示例（符号重定义）
-│   └── syntax_err.c       # 语法错误示例（parseErrorCount）
+│   ├── block_scope.c      # 块作用域示例
+│   ├── redef.c            # 语义错误：符号重定义
+│   ├── bad_break.c        # 语义错误：循环外 break
+│   ├── bad_continue.c     # 语义错误：循环外 continue
+│   ├── dup_case.c         # 语义错误：重复 case
+│   └── syntax_err.c       # 语法错误示例
 │
 ├── config/                # 工具配置
 │   └── Doxyfile
@@ -466,4 +492,4 @@ build\seuyacc.exe --lalr grammar\yacc.y generated\yyparse.cpp
 
 ---
 
-*东南大学编译原理专题实践 — Seu 编译器第七版*
+*东南大学编译原理专题实践 — Seu 编译器*
