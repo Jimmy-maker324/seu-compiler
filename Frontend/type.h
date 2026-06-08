@@ -70,6 +70,7 @@ public:
     static Type* Void;    ///< void 类型单例
     static Type* Int;     ///< int 类型单例
     static Type* Char;    ///< char 类型单例
+    static Type* CharPtr; ///< char* 类型单例（字符串字面量等）
     static Type* Float;   ///< float 类型单例
     static Type* Double;  ///< double 类型单例
 };

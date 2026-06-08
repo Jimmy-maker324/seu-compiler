@@ -343,6 +343,12 @@ namespace {
         out << "    int token_valid = 0;   /* 0 表示需读取新记号（yyclearin） */\n\n";
 
         out << "    /* Initialization */\n";
+        out << "    for (int _vi = 0; _vi < STACK_SIZE; ++_vi) {\n";
+        out << "        val_stack[_vi].ival = 0;\n";
+        out << "        val_stack[_vi].fval = 0.0;\n";
+        out << "        val_stack[_vi].sval = nullptr;\n";
+        out << "        val_stack[_vi].ptr = nullptr;\n";
+        out << "    }\n";
         out << "    state_stack[sp] = 0;\n";
         out << "    sym_stack[sp] = 0;\n";
         out << "    sp++;\n\n";
@@ -376,8 +382,14 @@ namespace {
         out << "                val_stack[sp].fval = 0.0;\n";
         out << "                val_stack[sp].sval = nullptr;\n";
         out << "                val_stack[sp].ptr = nullptr;\n";
-        out << "                if (token == T_IDENTIFIER || token == T_STRING_LITERAL) {\n";
-        out << "                    val_stack[sp].sval = yylval.sval;\n";
+        out << "                if (token == T_IDENTIFIER) {\n";
+        out << "                    val_stack[sp].ptr = new IdentifierNode(\n";
+        out << "                        std::string(yylval.sval ? yylval.sval : \"\"), yylineno);\n";
+        out << "                    if (yylval.sval) free(yylval.sval);\n";
+        out << "                } else if (token == T_STRING_LITERAL) {\n";
+        out << "                    val_stack[sp].ptr = new StringNode(\n";
+        out << "                        std::string(yylval.sval ? yylval.sval : \"\"), yylineno);\n";
+        out << "                    if (yylval.sval) free(yylval.sval);\n";
         out << "                } else if (token == T_CONSTANT) {\n";
         out << "                    val_stack[sp].ival = yylval.ival;\n";
         out << "                } else if (token == T_FLOAT_CONSTANT) {\n";
@@ -413,6 +425,13 @@ namespace {
                 out << "                        }\n";
             }
         }
+        out << "                    }\n\n";
+        out << "                    /* Clear RHS stack slots to avoid stale pointer reads */\n";
+        out << "                    for (int _vi = sp + 1; _vi <= sp + right_len - 1; ++_vi) {\n";
+        out << "                        val_stack[_vi].ptr = nullptr;\n";
+        out << "                        val_stack[_vi].ival = 0;\n";
+        out << "                        val_stack[_vi].fval = 0.0;\n";
+        out << "                        val_stack[_vi].sval = nullptr;\n";
         out << "                    }\n\n";
         out << "                    /* Look up Goto table */\n";
         out << "                    int prev_state = state_stack[sp - 1];\n";

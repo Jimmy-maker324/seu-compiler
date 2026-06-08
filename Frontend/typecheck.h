@@ -37,6 +37,8 @@ private:
     int switchDepth_ = 0;
     /** @brief 函数体最外层 CompoundStmt 与形参共享作用域，不再嵌套开 scope */
     bool skipCompoundScope_ = false;
+    /** @brief 当前函数返回类型；nullptr 表示不在函数体内 */
+    Type* currentReturnType_ = nullptr;
 
     void enterScopeLogged();
     void leaveScopeLogged();
@@ -58,7 +60,7 @@ private:
     Type* visitInteger(IntegerNode* num);
     /** @brief 浮点字面量类型为 double */
     Type* visitFloat(FloatNode* num);
-    /** @brief 字符串字面量类型简化为 char */
+    /** @brief 字符串字面量类型为 char* */
     Type* visitString(StringNode* str);
     /** @brief 检查函数调用的存在性、实参个数与类型 */
     Type* visitCall(CallNode* call);

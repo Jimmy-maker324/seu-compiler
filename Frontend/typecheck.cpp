@@ -12,7 +12,7 @@
  *   VarDecl：查重 → addSymbol
  *   FuncDef：登记函数类型 → enterScope → 处理形参 → 检查 compound → leaveScope
  *   CompoundStmt：enterScope → 子节点 → leaveScope（函数体最外层块与形参同 scope）
- *   If/While/Return：递归检查条件与分支类型
+ *   If/While/Return：递归检查条件与分支类型；Return 与当前函数返回类型比对
  *
  * 【visit 表达式规则】
  *   二元运算：数值类型提升
@@ -37,6 +37,7 @@
  */
 static bool type_equal(Type* a, Type* b) {
     if (!a || !b) return false;
+    if (a == b) return true;
     if ((a->kind == TypeKind::Int && b->kind == TypeKind::Char) ||
         (a->kind == TypeKind::Char && b->kind == TypeKind::Int))
         return true;
@@ -81,6 +82,9 @@ static Type* promoteNumeric(Type* a, Type* b) {
 static bool assignCompatible(Type* lhs, Type* rhs) {
     if (type_equal(lhs, rhs)) return true;
     if (lhs->kind == TypeKind::Pointer) {
+        if (rhs->kind == TypeKind::Pointer)
+            return type_equal(static_cast<PointerType*>(lhs)->base,
+                              static_cast<PointerType*>(rhs)->base);
         if (rhs->kind == TypeKind::Function)
             return type_equal(static_cast<PointerType*>(lhs)->base, rhs);
         return false;
@@ -105,12 +109,14 @@ static bool isLogicalOp(int op) {
 /** @brief clone 并解析类型树（不修改 AST 上的 Type*） */
 Type* TypeChecker::resolveTypeTree(Type* ftype, int line, bool reportUnknownTag) {
     if (!ftype) return BasicType::Int;
-    Type* t = cloneType(ftype);
-    if (t->kind == TypeKind::Pointer) {
-        static_cast<PointerType*>(t)->base =
-            resolveTypeTree(static_cast<PointerType*>(t)->base, line, reportUnknownTag);
-        return t;
+    if (ftype->kind == TypeKind::Pointer) {
+        Type* base = resolveTypeTree(static_cast<PointerType*>(ftype)->base, line,
+                                      reportUnknownTag);
+        if (base == BasicType::Char)
+            return BasicType::CharPtr;
+        return new PointerType(base);
     }
+    Type* t = cloneType(ftype);
     if (t->kind == TypeKind::Array) {
         static_cast<ArrayType*>(t)->base =
             resolveTypeTree(static_cast<ArrayType*>(t)->base, line, reportUnknownTag);
@@ -202,6 +208,13 @@ void TypeChecker::check(ASTNode* root, std::ostream* report) {
     typeLog_.clear();
     scopeDepth_ = 0;
     errorCount_ = 0;
+    loopDepth_ = 0;
+    switchDepth_ = 0;
+    skipCompoundScope_ = false;
+    currentReturnType_ = nullptr;
+
+    while (currentScope)
+        leaveScope();
 
     if (!root || root->kind != NodeKind::Program) {
         flushReport();
@@ -323,10 +336,15 @@ Type* TypeChecker::visitLvalue(ASTNode* node) {
 
 /** @brief 赋值左值类型须与右值类型结构等价 */
 Type* TypeChecker::visitAssignOp(AssignOpNode* assign) {
+    if (!assign->right) {
+        error("assignment missing right-hand side", assign->line);
+        return BasicType::Int;
+    }
     Type* left = visitLvalue(assign->left.get());
     Type* right = visit(assign->right.get());
     if (!assignCompatible(left, right)) {
-        error("assignment type mismatch", assign->line);
+        error("assignment type mismatch: cannot convert "
+              + right->toString() + " to " + left->toString(), assign->line);
     } else {
         logTypeCheck("行 " + std::to_string(assign->line) + ": 赋值类型匹配 ("
                      + left->toString() + " = " + right->toString() + ")");
@@ -354,9 +372,10 @@ Type* TypeChecker::visitFloat(FloatNode* num) {
     return BasicType::Double;
 }
 
-/** @brief 字符串字面量简化为 char 类型（未建模 char*） */
+/** @brief 字符串字面量类型为 char* */
 Type* TypeChecker::visitString(StringNode* str) {
-    return BasicType::Char; // 简化
+    (void)str;
+    return BasicType::CharPtr;
 }
 
 /** @brief 验证函数/函数指针调用 */
@@ -489,8 +508,10 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
                 addSymbolLogged(id->name, varType, false, id->line);
                 if (decl->children.size() >= 3) {
                     Type* init = visit(decl->children[2].get());
-                    if (!type_equal(varType, init)) {
-                        error("initializer type mismatch", decl->line);
+                    if (!assignCompatible(varType, init)) {
+                        error("initializer type mismatch: cannot convert "
+                              + init->toString() + " to " + varType->toString(),
+                              decl->line);
                     }
                 }
             }
@@ -617,9 +638,24 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
                 error("'continue' outside loop", stmt->line);
             break;
         case NodeKind::ReturnStmt: {
-            auto* retNode = (MultiNode*)stmt;
-            if (!retNode->children.empty())
-                visit(retNode->children[0].get());
+            auto* retNode = static_cast<MultiNode*>(stmt);
+            if (!currentReturnType_) {
+                error("'return' outside function", retNode->line);
+                break;
+            }
+            if (currentReturnType_->kind == TypeKind::Void) {
+                if (!retNode->children.empty())
+                    error("void function must not return a value", retNode->line);
+            } else if (retNode->children.empty()) {
+                error("non-void function must return a value", retNode->line);
+            } else {
+                Type* valType = visit(retNode->children[0].get());
+                if (!assignCompatible(currentReturnType_, valType)) {
+                    error("return type mismatch: expected "
+                          + currentReturnType_->toString() + ", got "
+                          + valType->toString(), retNode->line);
+                }
+            }
             break;
         }
         case NodeKind::FuncDef: {
@@ -627,7 +663,8 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
             if (func->children.size() < 3) break;
             auto* retType = static_cast<TypeNode*>(func->children[0].get())->type;
             auto* funcId = static_cast<IdentifierNode*>(func->children[1].get());
-            auto* ft = new FunctionType(resolveVarType(retType, funcId->line));
+            Type* fnRetType = resolveVarType(retType, funcId->line);
+            auto* ft = new FunctionType(fnRetType);
             size_t bodyIdx = 2;
             // 若有 ParamList，则解析形参类型并注册函数符号
             if (func->children[2]->kind == NodeKind::ParamList) {
@@ -644,6 +681,8 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
             addSymbolLogged(funcId->name, ft, true, funcId->line);
             logTypeCheck("行 " + std::to_string(funcId->line) + ": 检查函数 "
                          + funcId->name + " 函数体");
+            Type* savedReturnType = currentReturnType_;
+            currentReturnType_ = fnRetType;
             enterScopeLogged();
             // 将形参作为局部变量加入函数体作用域
             if (bodyIdx == 3) {
@@ -663,6 +702,7 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
                 visitStmt(func->children[bodyIdx].get());
             }
             leaveScopeLogged();
+            currentReturnType_ = savedReturnType;
             break;
         }
         case NodeKind::StmtList:

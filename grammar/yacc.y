@@ -10,7 +10,8 @@
  *
  * 【AST 构建约定】
  *   adopt(void*& p) — 从归约槽接管 unique_ptr，清空槽防 double-free
- *   grab(void*& p)  — 取走裸指针供 BinaryOp 等构造，槽置空
+ *   grab(void*& p)  — 取走裸指针供 BinaryOp 等构造，多槽时先 grab 高下标
+ *   $$ 与 $1 同槽（val_stack[sp]）；赋值等须 adopt($3) 后再 adopt($1)
  *   MultiNode 容器 — Program/CompoundStmt/StmtList 等用 children 列表
  *
  * 【悬空指针】yacc.y 中 FuncDef 子节点顺序：Type, Identifier, ParamList?, CompoundStmt
@@ -36,6 +37,15 @@ ASTNode* astRoot = nullptr;
 /** 语法错误计数（含 error 恢复后继续分析时的报错） */
 int parseErrorCount = 0;
 
+/** 移进时已构造 IdentifierNode；取走名字并释放临时节点 */
+static std::string takeIdentName(void*& p) {
+    auto* id = static_cast<IdentifierNode*>(p);
+    std::string name = id->name;
+    delete id;
+    p = nullptr;
+    return name;
+}
+
 /* 从 void* 槽接管 AST 所有权，并清空槽位防止重复释放 */
 static std::unique_ptr<ASTNode> adopt(void*& p) {
     ASTNode* n = static_cast<ASTNode*>(p);
@@ -43,11 +53,31 @@ static std::unique_ptr<ASTNode> adopt(void*& p) {
     return std::unique_ptr<ASTNode>(n);
 }
 
-// 从栈槽取走 AST 指针（先保存再清空，避免 $$ 与 $1 同槽时被覆盖）
+// 从栈槽取走 AST 指针（先保存再清空；多槽归约时须先 grab 较大下标，避免与 $$ 重叠）
 static ASTNode* grab(void*& p) {
     ASTNode* n = static_cast<ASTNode*>(p);
     p = nullptr;
     return n;
+}
+
+static void grabPair(void*& p1, void*& p3, ASTNode*& outL, ASTNode*& outR) {
+    outR = grab(p3);
+    outL = grab(p1);
+}
+
+/** 三目归约：先 grab 高下标槽，避免 $$ 与 $1 同槽时覆盖 */
+static void grabTriple(void*& p1, void*& p3, void*& p5, ASTNode*& a, ASTNode*& b, ASTNode*& c) {
+    c = grab(p5);
+    b = grab(p3);
+    a = grab(p1);
+}
+
+static void grabQuad(void*& p1, void*& p3, void*& p5, void*& p7,
+                     ASTNode*& a, ASTNode*& b, ASTNode*& c, ASTNode*& d) {
+    d = grab(p7);
+    c = grab(p5);
+    b = grab(p3);
+    a = grab(p1);
 }
 
 /* 结构体成员声明符：标识符 + 可选指针/数组修饰 */
@@ -216,21 +246,19 @@ global_decl:
 /* ==================== 结构体定义 ==================== */
 struct_def:
     T_STRUCT T_IDENTIFIER '{' '}' ';' {
-        std::string tag($2.sval);
+        std::string tag = takeIdentName($2.ptr);
         auto* node = new MultiNode(NodeKind::StructDef, yylineno);
         node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(tag, yylineno)));
-        free($2.sval);
         $$.ptr = node;
     }
     | T_STRUCT T_IDENTIFIER '{' struct_field_list '}' ';' {
-        std::string tag($2.sval);
+        std::string tag = takeIdentName($2.ptr);
         auto* node = new MultiNode(NodeKind::StructDef, yylineno);
         node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(tag, yylineno)));
         MultiNode* fields = (MultiNode*)$4.ptr;
         for (auto& ch : fields->children)
             node->addChild(std::move(ch));
         delete fields;
-        free($2.sval);
         $$.ptr = node;
     }
     ;
@@ -238,21 +266,19 @@ struct_def:
 /* ==================== 联合体定义 ==================== */
 union_def:
     T_UNION T_IDENTIFIER '{' '}' ';' {
-        std::string tag($2.sval);
+        std::string tag = takeIdentName($2.ptr);
         auto* node = new MultiNode(NodeKind::UnionDef, yylineno);
         node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(tag, yylineno)));
-        free($2.sval);
         $$.ptr = node;
     }
     | T_UNION T_IDENTIFIER '{' struct_field_list '}' ';' {
-        std::string tag($2.sval);
+        std::string tag = takeIdentName($2.ptr);
         auto* node = new MultiNode(NodeKind::UnionDef, yylineno);
         node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(tag, yylineno)));
         MultiNode* fields = (MultiNode*)$4.ptr;
         for (auto& ch : fields->children)
             node->addChild(std::move(ch));
         delete fields;
-        free($2.sval);
         $$.ptr = node;
     }
     ;
@@ -285,35 +311,31 @@ field_decl:
 
 field_declarator:
     T_IDENTIFIER {
-        std::string fname($1.sval);
+        std::string fname = takeIdentName($1.ptr);
         auto* fd = new FieldDeclarator();
         fd->name = fname;
-        free($1.sval);
         $$.ptr = fd;
     }
     | '*' T_IDENTIFIER {
-        std::string fname($2.sval);
+        std::string fname = takeIdentName($2.ptr);
         auto* fd = new FieldDeclarator();
         fd->name = fname;
         fd->isPointer = true;
-        free($2.sval);
         $$.ptr = fd;
     }
     | T_IDENTIFIER '[' T_CONSTANT ']' {
-        std::string fname($1.sval);
+        std::string fname = takeIdentName($1.ptr);
         auto* fd = new FieldDeclarator();
         fd->name = fname;
         fd->arraySize = $3.ival;
-        free($1.sval);
         $$.ptr = fd;
     }
     | '*' T_IDENTIFIER '[' T_CONSTANT ']' {
-        std::string fname($2.sval);
+        std::string fname = takeIdentName($2.ptr);
         auto* fd = new FieldDeclarator();
         fd->name = fname;
         fd->isPointer = true;
         fd->arraySize = $4.ival;
-        free($2.sval);
         $$.ptr = fd;
     }
     ;
@@ -326,153 +348,135 @@ type_spec:
     | T_DOUBLE { $$.ptr = (void*)BasicType::Double; }
     | T_VOID { $$.ptr = (void*)BasicType::Void; }
     | T_STRUCT T_IDENTIFIER {
-        std::string tag($2.sval);
+        std::string tag = takeIdentName($2.ptr);
         StructType* st = lookupStructType(tag);
         if (!st) st = new StructType(tag);
         $$.ptr = (void*)st;
-        free($2.sval);
     }
     | T_UNION T_IDENTIFIER {
-        std::string tag($2.sval);
+        std::string tag = takeIdentName($2.ptr);
         UnionType* ut = lookupUnionType(tag);
         if (!ut) ut = new UnionType(tag);
         $$.ptr = (void*)ut;
-        free($2.sval);
     }
     ;
 
 /* ==================== 全局/局部变量声明 ==================== */
 var_decl:
     T_INT T_IDENTIFIER ';' {
-        std::string name($2.sval);
+        std::string name = takeIdentName($2.ptr);
         auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
         node->addChild(std::unique_ptr<ASTNode>(new TypeNode(BasicType::Int, yylineno)));
         node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        free($2.sval);
         $$.ptr = node;
     }
     | T_INT T_IDENTIFIER '[' T_CONSTANT ']' ';' {
-        std::string name($2.sval);
+        std::string name = takeIdentName($2.ptr);
         auto* arrType = new ArrayType(BasicType::Int, $4.ival);
         auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
         node->addChild(std::unique_ptr<ASTNode>(new TypeNode(arrType, yylineno)));
         node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        free($2.sval);
         $$.ptr = node;
     }
     | T_INT '*' T_IDENTIFIER ';' {
-        std::string name($3.sval);
+        std::string name = takeIdentName($3.ptr);
         auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
         node->addChild(std::unique_ptr<ASTNode>(new TypeNode(new PointerType(BasicType::Int), yylineno)));
         node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        free($3.sval);
         $$.ptr = node;
     }
     | T_INT '*' T_IDENTIFIER '[' T_CONSTANT ']' ';' {
-        std::string name($3.sval);
+        std::string name = takeIdentName($3.ptr);
         auto* pt = new PointerType(BasicType::Int);
         auto* arrType = new ArrayType(pt, $5.ival);
         auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
         node->addChild(std::unique_ptr<ASTNode>(new TypeNode(arrType, yylineno)));
         node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        free($3.sval);
         $$.ptr = node;
     }
     | T_INT '(' '*' T_IDENTIFIER ')' '(' param_list ')' ';' {
-        std::string name($4.sval);
+        std::string name = takeIdentName($4.ptr);
         FunctionType* ft = new FunctionType(BasicType::Int);
         if ($7.ptr) DeclaratorInfo::fillFunctionParams(ft, (MultiNode*)$7.ptr);
         auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
         node->addChild(std::unique_ptr<ASTNode>(new TypeNode(new PointerType(ft), yylineno)));
         node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        free($4.sval);
         $$.ptr = node;
     }
     | T_FLOAT T_IDENTIFIER ';' {
-        std::string name($2.sval);
+        std::string name = takeIdentName($2.ptr);
         auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
         node->addChild(std::unique_ptr<ASTNode>(new TypeNode(BasicType::Float, yylineno)));
         node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        free($2.sval);
         $$.ptr = node;
     }
     | T_FLOAT T_IDENTIFIER '[' T_CONSTANT ']' ';' {
-        std::string name($2.sval);
+        std::string name = takeIdentName($2.ptr);
         auto* arrType = new ArrayType(BasicType::Float, $4.ival);
         auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
         node->addChild(std::unique_ptr<ASTNode>(new TypeNode(arrType, yylineno)));
         node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        free($2.sval);
         $$.ptr = node;
     }
     | T_FLOAT '*' T_IDENTIFIER ';' {
-        std::string name($3.sval);
+        std::string name = takeIdentName($3.ptr);
         auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
         node->addChild(std::unique_ptr<ASTNode>(new TypeNode(new PointerType(BasicType::Float), yylineno)));
         node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        free($3.sval);
         $$.ptr = node;
     }
     | T_DOUBLE T_IDENTIFIER ';' {
-        std::string name($2.sval);
+        std::string name = takeIdentName($2.ptr);
         auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
         node->addChild(std::unique_ptr<ASTNode>(new TypeNode(BasicType::Double, yylineno)));
         node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        free($2.sval);
         $$.ptr = node;
     }
     | T_DOUBLE T_IDENTIFIER '[' T_CONSTANT ']' ';' {
-        std::string name($2.sval);
+        std::string name = takeIdentName($2.ptr);
         auto* arrType = new ArrayType(BasicType::Double, $4.ival);
         auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
         node->addChild(std::unique_ptr<ASTNode>(new TypeNode(arrType, yylineno)));
         node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        free($2.sval);
         $$.ptr = node;
     }
     | T_CHAR T_IDENTIFIER ';' {
-        std::string name($2.sval);
+        std::string name = takeIdentName($2.ptr);
         auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
         node->addChild(std::unique_ptr<ASTNode>(new TypeNode(BasicType::Char, yylineno)));
         node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        free($2.sval);
         $$.ptr = node;
     }
     | T_CHAR '*' T_IDENTIFIER ';' {
-        std::string name($3.sval);
+        std::string name = takeIdentName($3.ptr);
         auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
         node->addChild(std::unique_ptr<ASTNode>(new TypeNode(new PointerType(BasicType::Char), yylineno)));
         node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        free($3.sval);
         $$.ptr = node;
     }
     | T_STRUCT T_IDENTIFIER T_IDENTIFIER ';' {
-        std::string tag($2.sval);
-        std::string name($3.sval);
+        std::string tag = takeIdentName($2.ptr);
+        std::string name = takeIdentName($3.ptr);
         StructType* st = lookupStructType(tag);
         if (!st) st = new StructType(tag);
         auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
         node->addChild(std::unique_ptr<ASTNode>(new TypeNode(st, yylineno)));
         node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        free($2.sval);
-        free($3.sval);
         $$.ptr = node;
     }
     | T_STRUCT T_IDENTIFIER '*' T_IDENTIFIER ';' {
-        std::string tag($2.sval);
-        std::string name($4.sval);
+        std::string tag = takeIdentName($2.ptr);
+        std::string name = takeIdentName($4.ptr);
         StructType* st = lookupStructType(tag);
         if (!st) st = new StructType(tag);
         auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
         node->addChild(std::unique_ptr<ASTNode>(new TypeNode(new PointerType(st), yylineno)));
         node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        free($2.sval);
-        free($4.sval);
         $$.ptr = node;
     }
     | T_STRUCT T_IDENTIFIER '*' T_IDENTIFIER '[' T_CONSTANT ']' ';' {
-        std::string tag($2.sval);
-        std::string name($4.sval);
+        std::string tag = takeIdentName($2.ptr);
+        std::string name = takeIdentName($4.ptr);
         StructType* st = lookupStructType(tag);
         if (!st) st = new StructType(tag);
         auto* pt = new PointerType(st);
@@ -480,154 +484,140 @@ var_decl:
         auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
         node->addChild(std::unique_ptr<ASTNode>(new TypeNode(arrType, yylineno)));
         node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        free($2.sval);
-        free($4.sval);
         $$.ptr = node;
     }
     | T_UNION T_IDENTIFIER T_IDENTIFIER ';' {
-        std::string tag($2.sval);
-        std::string name($3.sval);
+        std::string tag = takeIdentName($2.ptr);
+        std::string name = takeIdentName($3.ptr);
         UnionType* ut = lookupUnionType(tag);
         if (!ut) ut = new UnionType(tag);
         auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
         node->addChild(std::unique_ptr<ASTNode>(new TypeNode(ut, yylineno)));
         node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        free($2.sval);
-        free($3.sval);
         $$.ptr = node;
     }
     | T_UNION T_IDENTIFIER '*' T_IDENTIFIER ';' {
-        std::string tag($2.sval);
-        std::string name($4.sval);
+        std::string tag = takeIdentName($2.ptr);
+        std::string name = takeIdentName($4.ptr);
         UnionType* ut = lookupUnionType(tag);
         if (!ut) ut = new UnionType(tag);
         auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
         node->addChild(std::unique_ptr<ASTNode>(new TypeNode(new PointerType(ut), yylineno)));
         node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        free($2.sval);
-        free($4.sval);
         $$.ptr = node;
     }
     | T_INT T_IDENTIFIER '=' expression ';' {
-        std::string name($2.sval);
-        $$.ptr = makeVarDeclNode(BasicType::Int, name, yylineno, grab($4.ptr));
-        free($2.sval);
+        auto init = adopt($4.ptr);
+        std::string name = takeIdentName($2.ptr);
+        $$.ptr = makeVarDeclNode(BasicType::Int, name, yylineno, init.release());
     }
     | T_INT T_IDENTIFIER '[' T_CONSTANT ']' '=' expression ';' {
-        std::string name($2.sval);
+        auto init = adopt($7.ptr);
+        std::string name = takeIdentName($2.ptr);
         auto* arrType = new ArrayType(BasicType::Int, $4.ival);
-        $$.ptr = makeVarDeclNode(arrType, name, yylineno, grab($7.ptr));
-        free($2.sval);
+        $$.ptr = makeVarDeclNode(arrType, name, yylineno, init.release());
     }
     | T_FLOAT T_IDENTIFIER '=' expression ';' {
-        std::string name($2.sval);
-        $$.ptr = makeVarDeclNode(BasicType::Float, name, yylineno, grab($4.ptr));
-        free($2.sval);
+        auto init = adopt($4.ptr);
+        std::string name = takeIdentName($2.ptr);
+        $$.ptr = makeVarDeclNode(BasicType::Float, name, yylineno, init.release());
     }
     | T_DOUBLE T_IDENTIFIER '=' expression ';' {
-        std::string name($2.sval);
-        $$.ptr = makeVarDeclNode(BasicType::Double, name, yylineno, grab($4.ptr));
-        free($2.sval);
+        auto init = adopt($4.ptr);
+        std::string name = takeIdentName($2.ptr);
+        $$.ptr = makeVarDeclNode(BasicType::Double, name, yylineno, init.release());
     }
     | T_CHAR T_IDENTIFIER '=' expression ';' {
-        std::string name($2.sval);
-        $$.ptr = makeVarDeclNode(BasicType::Char, name, yylineno, grab($4.ptr));
-        free($2.sval);
+        auto init = adopt($4.ptr);
+        std::string name = takeIdentName($2.ptr);
+        $$.ptr = makeVarDeclNode(BasicType::Char, name, yylineno, init.release());
     }
     | T_INT '*' T_IDENTIFIER '=' expression ';' {
-        std::string name($3.sval);
-        $$.ptr = makeVarDeclNode(new PointerType(BasicType::Int), name, yylineno, grab($5.ptr));
-        free($3.sval);
+        auto init = adopt($5.ptr);
+        std::string name = takeIdentName($3.ptr);
+        $$.ptr = makeVarDeclNode(new PointerType(BasicType::Int), name, yylineno, init.release());
     }
     | T_FLOAT '*' T_IDENTIFIER '=' expression ';' {
-        std::string name($3.sval);
-        $$.ptr = makeVarDeclNode(new PointerType(BasicType::Float), name, yylineno, grab($5.ptr));
-        free($3.sval);
+        auto init = adopt($5.ptr);
+        std::string name = takeIdentName($3.ptr);
+        $$.ptr = makeVarDeclNode(new PointerType(BasicType::Float), name, yylineno, init.release());
     }
     | T_CHAR '*' T_IDENTIFIER '=' expression ';' {
-        std::string name($3.sval);
-        $$.ptr = makeVarDeclNode(new PointerType(BasicType::Char), name, yylineno, grab($5.ptr));
-        free($3.sval);
+        auto init = adopt($5.ptr);
+        std::string name = takeIdentName($3.ptr);
+        $$.ptr = makeVarDeclNode(new PointerType(BasicType::Char), name, yylineno, init.release());
     }
     | T_STRUCT T_IDENTIFIER T_IDENTIFIER '=' expression ';' {
-        std::string tag($2.sval);
-        std::string name($3.sval);
+        auto init = adopt($5.ptr);
+        std::string tag = takeIdentName($2.ptr);
+        std::string name = takeIdentName($3.ptr);
         StructType* st = lookupStructType(tag);
         if (!st) st = new StructType(tag);
-        $$.ptr = makeVarDeclNode(st, name, yylineno, grab($5.ptr));
-        free($2.sval);
-        free($3.sval);
+        $$.ptr = makeVarDeclNode(st, name, yylineno, init.release());
     }
     | T_STRUCT T_IDENTIFIER '*' T_IDENTIFIER '=' expression ';' {
-        std::string tag($2.sval);
-        std::string name($4.sval);
+        auto init = adopt($6.ptr);
+        std::string tag = takeIdentName($2.ptr);
+        std::string name = takeIdentName($4.ptr);
         StructType* st = lookupStructType(tag);
         if (!st) st = new StructType(tag);
-        $$.ptr = makeVarDeclNode(new PointerType(st), name, yylineno, grab($6.ptr));
-        free($2.sval);
-        free($4.sval);
+        $$.ptr = makeVarDeclNode(new PointerType(st), name, yylineno, init.release());
     }
     | T_UNION T_IDENTIFIER T_IDENTIFIER '=' expression ';' {
-        std::string tag($2.sval);
-        std::string name($3.sval);
+        auto init = adopt($5.ptr);
+        std::string tag = takeIdentName($2.ptr);
+        std::string name = takeIdentName($3.ptr);
         UnionType* ut = lookupUnionType(tag);
         if (!ut) ut = new UnionType(tag);
-        $$.ptr = makeVarDeclNode(ut, name, yylineno, grab($5.ptr));
-        free($2.sval);
-        free($3.sval);
+        $$.ptr = makeVarDeclNode(ut, name, yylineno, init.release());
     }
     | T_UNION T_IDENTIFIER '*' T_IDENTIFIER '=' expression ';' {
-        std::string tag($2.sval);
-        std::string name($4.sval);
+        auto init = adopt($6.ptr);
+        std::string tag = takeIdentName($2.ptr);
+        std::string name = takeIdentName($4.ptr);
         UnionType* ut = lookupUnionType(tag);
         if (!ut) ut = new UnionType(tag);
-        $$.ptr = makeVarDeclNode(new PointerType(ut), name, yylineno, grab($6.ptr));
-        free($2.sval);
-        free($4.sval);
+        $$.ptr = makeVarDeclNode(new PointerType(ut), name, yylineno, init.release());
     }
     ;
 
 /* ==================== 函数定义（含形参表与复合语句体） ==================== */
 func_def:
     T_INT T_IDENTIFIER '(' param_list ')' compound_stmt {
-        std::string fname($2.sval);
+        std::string fname = takeIdentName($2.ptr);
         auto* func = new MultiNode(NodeKind::FuncDef, yylineno);
         func->addChild(std::unique_ptr<ASTNode>(new TypeNode(BasicType::Int, yylineno)));
         func->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(fname, yylineno)));
         if ($4.ptr) func->addChild(adopt($4.ptr));
         func->addChild(adopt($6.ptr));
         $$.ptr = func;
-        free($2.sval);
     }
     | T_FLOAT T_IDENTIFIER '(' param_list ')' compound_stmt {
-        std::string fname($2.sval);
+        std::string fname = takeIdentName($2.ptr);
         auto* func = new MultiNode(NodeKind::FuncDef, yylineno);
         func->addChild(std::unique_ptr<ASTNode>(new TypeNode(BasicType::Float, yylineno)));
         func->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(fname, yylineno)));
         if ($4.ptr) func->addChild(adopt($4.ptr));
         func->addChild(adopt($6.ptr));
         $$.ptr = func;
-        free($2.sval);
     }
     | T_DOUBLE T_IDENTIFIER '(' param_list ')' compound_stmt {
-        std::string fname($2.sval);
+        std::string fname = takeIdentName($2.ptr);
         auto* func = new MultiNode(NodeKind::FuncDef, yylineno);
         func->addChild(std::unique_ptr<ASTNode>(new TypeNode(BasicType::Double, yylineno)));
         func->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(fname, yylineno)));
         if ($4.ptr) func->addChild(adopt($4.ptr));
         func->addChild(adopt($6.ptr));
         $$.ptr = func;
-        free($2.sval);
     }
     | T_VOID T_IDENTIFIER '(' param_list ')' compound_stmt {
-        std::string fname($2.sval);
+        std::string fname = takeIdentName($2.ptr);
         auto* func = new MultiNode(NodeKind::FuncDef, yylineno);
         func->addChild(std::unique_ptr<ASTNode>(new TypeNode(BasicType::Void, yylineno)));
         func->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(fname, yylineno)));
         if ($4.ptr) func->addChild(adopt($4.ptr));
         func->addChild(adopt($6.ptr));
         $$.ptr = func;
-        free($2.sval);
     }
     ;
 
@@ -675,10 +665,9 @@ declarator:
 
 direct_declarator:
     T_IDENTIFIER {
-        std::string name($1.sval);
+        std::string name = takeIdentName($1.ptr);
         auto* d = new DeclaratorInfo();
         d->name = name;
-        free($1.sval);
         $$.ptr = d;
     }
     | '(' declarator ')' {
@@ -762,9 +751,11 @@ matched_stmt:
     | continue_stmt %prec LOWER_THAN_ELSE { }
     | T_IF '(' expression ')' matched_stmt T_ELSE matched_stmt {
         auto* ifNode = new MultiNode(NodeKind::IfStmt, yylineno);
-        ifNode->addChild(std::unique_ptr<ASTNode>(grab($3.ptr)));
-        ifNode->addChild(std::unique_ptr<ASTNode>(grab($5.ptr)));
-        ifNode->addChild(std::unique_ptr<ASTNode>(grab($7.ptr)));
+        ASTNode *cond, *thenB, *elseB;
+        grabTriple($3.ptr, $5.ptr, $7.ptr, cond, thenB, elseB);
+        ifNode->addChild(std::unique_ptr<ASTNode>(cond));
+        ifNode->addChild(std::unique_ptr<ASTNode>(thenB));
+        ifNode->addChild(std::unique_ptr<ASTNode>(elseB));
         $$.ptr = ifNode;
     }
     ;
@@ -772,15 +763,19 @@ matched_stmt:
 unmatched_stmt:
     T_IF '(' expression ')' stmt %prec LOWER_THAN_ELSE {
         auto* ifNode = new MultiNode(NodeKind::IfStmt, yylineno);
-        ifNode->addChild(std::unique_ptr<ASTNode>(grab($3.ptr)));
-        ifNode->addChild(std::unique_ptr<ASTNode>(grab($5.ptr)));
+        ASTNode *cond, *thenB;
+        grabPair($3.ptr, $5.ptr, cond, thenB);
+        ifNode->addChild(std::unique_ptr<ASTNode>(cond));
+        ifNode->addChild(std::unique_ptr<ASTNode>(thenB));
         $$.ptr = ifNode;
     }
     | T_IF '(' expression ')' matched_stmt T_ELSE unmatched_stmt {
         auto* ifNode = new MultiNode(NodeKind::IfStmt, yylineno);
-        ifNode->addChild(std::unique_ptr<ASTNode>(grab($3.ptr)));
-        ifNode->addChild(std::unique_ptr<ASTNode>(grab($5.ptr)));
-        ifNode->addChild(std::unique_ptr<ASTNode>(grab($7.ptr)));
+        ASTNode *cond, *thenB, *elseB;
+        grabTriple($3.ptr, $5.ptr, $7.ptr, cond, thenB, elseB);
+        ifNode->addChild(std::unique_ptr<ASTNode>(cond));
+        ifNode->addChild(std::unique_ptr<ASTNode>(thenB));
+        ifNode->addChild(std::unique_ptr<ASTNode>(elseB));
         $$.ptr = ifNode;
     }
     ;
@@ -788,7 +783,7 @@ unmatched_stmt:
 expr_stmt:
     expression ';' {
         auto* exprStmt = new MultiNode(NodeKind::ExprStmt, yylineno);
-        exprStmt->addChild(std::unique_ptr<ASTNode>(grab($1.ptr)));
+        exprStmt->addChild(adopt($1.ptr));
         $$.ptr = exprStmt;
     }
     | ';' {
@@ -798,15 +793,17 @@ expr_stmt:
 
 while_stmt:
     T_WHILE while_paren_stmt {
-        $$.ptr = grab($2.ptr);
+        $$.ptr = adopt($2.ptr).release();
     }
     ;
 
 while_paren_stmt:
     '(' expression ')' stmt {
         auto* whileNode = new MultiNode(NodeKind::WhileStmt, yylineno);
-        whileNode->addChild(std::unique_ptr<ASTNode>(grab($2.ptr)));
-        whileNode->addChild(std::unique_ptr<ASTNode>(grab($4.ptr)));
+        ASTNode *cond, *body;
+        grabPair($2.ptr, $4.ptr, cond, body);
+        whileNode->addChild(std::unique_ptr<ASTNode>(cond));
+        whileNode->addChild(std::unique_ptr<ASTNode>(body));
         $$.ptr = whileNode;
     }
     ;
@@ -814,10 +811,12 @@ while_paren_stmt:
 for_stmt:
     T_FOR '(' for_init ';' for_cond ';' for_step ')' stmt {
         auto* forNode = new MultiNode(NodeKind::ForStmt, yylineno);
-        forNode->addChild(std::unique_ptr<ASTNode>(grab($3.ptr)));
-        forNode->addChild(std::unique_ptr<ASTNode>(grab($5.ptr)));
-        forNode->addChild(std::unique_ptr<ASTNode>(grab($7.ptr)));
-        forNode->addChild(std::unique_ptr<ASTNode>(grab($9.ptr)));
+        ASTNode *init, *cond, *step, *body;
+        grabQuad($3.ptr, $5.ptr, $7.ptr, $9.ptr, init, cond, step, body);
+        forNode->addChild(std::unique_ptr<ASTNode>(init));
+        forNode->addChild(std::unique_ptr<ASTNode>(cond));
+        forNode->addChild(std::unique_ptr<ASTNode>(step));
+        forNode->addChild(std::unique_ptr<ASTNode>(body));
         $$.ptr = forNode;
     }
     ;
@@ -828,24 +827,22 @@ for_init:
     }
     | expression {
         auto* init = new MultiNode(NodeKind::ExprStmt, yylineno);
-        init->addChild(std::unique_ptr<ASTNode>(grab($1.ptr)));
+        init->addChild(adopt($1.ptr));
         $$.ptr = init;
     }
     | T_INT T_IDENTIFIER {
-        std::string name($2.sval);
+        std::string name = takeIdentName($2.ptr);
         auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
         node->addChild(std::unique_ptr<ASTNode>(new TypeNode(BasicType::Int, yylineno)));
         node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        free($2.sval);
         $$.ptr = node;
     }
     | T_INT T_IDENTIFIER '=' expression {
-        std::string name($2.sval);
+        std::string name = takeIdentName($2.ptr);
         auto* node = new MultiNode(NodeKind::VarDecl, yylineno);
         node->addChild(std::unique_ptr<ASTNode>(new TypeNode(BasicType::Int, yylineno)));
         node->addChild(std::unique_ptr<ASTNode>(new IdentifierNode(name, yylineno)));
-        node->addChild(std::unique_ptr<ASTNode>(grab($4.ptr)));
-        free($2.sval);
+        node->addChild(adopt($4.ptr));
         $$.ptr = node;
     }
     ;
@@ -863,7 +860,7 @@ for_step:
     }
     | expression {
         auto* step = new MultiNode(NodeKind::ExprStmt, yylineno);
-        step->addChild(std::unique_ptr<ASTNode>(grab($1.ptr)));
+        step->addChild(adopt($1.ptr));
         $$.ptr = step;
     }
     ;
@@ -871,12 +868,12 @@ for_step:
 switch_stmt:
     T_SWITCH '(' expression ')' '{' '}' {
         auto* sw = new MultiNode(NodeKind::SwitchStmt, yylineno);
-        sw->addChild(std::unique_ptr<ASTNode>(grab($3.ptr)));
+        sw->addChild(adopt($3.ptr));
         $$.ptr = sw;
     }
     | T_SWITCH '(' expression ')' '{' switch_cases '}' {
         auto* sw = new MultiNode(NodeKind::SwitchStmt, yylineno);
-        sw->addChild(std::unique_ptr<ASTNode>(grab($3.ptr)));
+        sw->addChild(adopt($3.ptr));
         MultiNode* cases = (MultiNode*)$6.ptr;
         for (auto& ch : cases->children)
             sw->addChild(std::move(ch));
@@ -941,7 +938,7 @@ return_stmt:
     }
     | T_RETURN expression ';' {
         auto* retNode = new MultiNode(NodeKind::ReturnStmt, yylineno);
-        retNode->addChild(std::unique_ptr<ASTNode>(grab($2.ptr)));
+        retNode->addChild(adopt($2.ptr));
         $$.ptr = retNode;
     }
     ;
@@ -966,15 +963,15 @@ expression:
 assign_expr:
     logic_or_expr { }
     | postfix_expr '=' assign_expr {
-        ASTNode* l = grab($1.ptr);
-        ASTNode* r = grab($3.ptr);
-        $$.ptr = new AssignOpNode(std::unique_ptr<ASTNode>(l), std::unique_ptr<ASTNode>(r), yylineno);
+        auto r = adopt($3.ptr);
+        auto l = adopt($1.ptr);
+        $$.ptr = new AssignOpNode(std::move(l), std::move(r), yylineno);
     }
     | '*' postfix_expr '=' assign_expr %prec UMINUS {
-        ASTNode* p = grab($2.ptr);
-        ASTNode* r = grab($4.ptr);
-        auto* l = new UnaryOpNode('*', std::unique_ptr<ASTNode>(p), yylineno);
-        $$.ptr = new AssignOpNode(std::unique_ptr<ASTNode>(l), std::unique_ptr<ASTNode>(r), yylineno);
+        auto r = adopt($4.ptr);
+        auto p = adopt($2.ptr);
+        auto l = std::unique_ptr<ASTNode>(new UnaryOpNode('*', std::move(p), yylineno));
+        $$.ptr = new AssignOpNode(std::move(l), std::move(r), yylineno);
     }
     | postfix_expr '=' error { yyerrok; $$.ptr = nullptr; }  /* 赋值右侧错误恢复 */
     ;
@@ -982,8 +979,8 @@ assign_expr:
 logic_or_expr:
     logic_and_expr { }
     | logic_or_expr T_OR logic_and_expr {
-        ASTNode* l = grab($1.ptr);
-        ASTNode* r = grab($3.ptr);
+        ASTNode *l, *r;
+        grabPair($1.ptr, $3.ptr, l, r);
         $$.ptr = new BinaryOpNode(T_OR, std::unique_ptr<ASTNode>(l), std::unique_ptr<ASTNode>(r), yylineno);
     }
     ;
@@ -991,8 +988,8 @@ logic_or_expr:
 logic_and_expr:
     equality_expr { }
     | logic_and_expr T_AND equality_expr {
-        ASTNode* l = grab($1.ptr);
-        ASTNode* r = grab($3.ptr);
+        ASTNode *l, *r;
+        grabPair($1.ptr, $3.ptr, l, r);
         $$.ptr = new BinaryOpNode(T_AND, std::unique_ptr<ASTNode>(l), std::unique_ptr<ASTNode>(r), yylineno);
     }
     ;
@@ -1000,13 +997,13 @@ logic_and_expr:
 equality_expr:
     relational_expr { }
     | equality_expr T_EQ relational_expr {
-        ASTNode* l = grab($1.ptr);
-        ASTNode* r = grab($3.ptr);
+        ASTNode *l, *r;
+        grabPair($1.ptr, $3.ptr, l, r);
         $$.ptr = new BinaryOpNode(T_EQ, std::unique_ptr<ASTNode>(l), std::unique_ptr<ASTNode>(r), yylineno);
     }
     | equality_expr T_NE relational_expr {
-        ASTNode* l = grab($1.ptr);
-        ASTNode* r = grab($3.ptr);
+        ASTNode *l, *r;
+        grabPair($1.ptr, $3.ptr, l, r);
         $$.ptr = new BinaryOpNode(T_NE, std::unique_ptr<ASTNode>(l), std::unique_ptr<ASTNode>(r), yylineno);
     }
     ;
@@ -1014,23 +1011,23 @@ equality_expr:
 relational_expr:
     additive_expr { }
     | relational_expr '<' additive_expr {
-        ASTNode* l = grab($1.ptr);
-        ASTNode* r = grab($3.ptr);
+        ASTNode *l, *r;
+        grabPair($1.ptr, $3.ptr, l, r);
         $$.ptr = new BinaryOpNode(T_LT, std::unique_ptr<ASTNode>(l), std::unique_ptr<ASTNode>(r), yylineno);
     }
     | relational_expr T_LE additive_expr {
-        ASTNode* l = grab($1.ptr);
-        ASTNode* r = grab($3.ptr);
+        ASTNode *l, *r;
+        grabPair($1.ptr, $3.ptr, l, r);
         $$.ptr = new BinaryOpNode(T_LE, std::unique_ptr<ASTNode>(l), std::unique_ptr<ASTNode>(r), yylineno);
     }
     | relational_expr '>' additive_expr {
-        ASTNode* l = grab($1.ptr);
-        ASTNode* r = grab($3.ptr);
+        ASTNode *l, *r;
+        grabPair($1.ptr, $3.ptr, l, r);
         $$.ptr = new BinaryOpNode(T_GT, std::unique_ptr<ASTNode>(l), std::unique_ptr<ASTNode>(r), yylineno);
     }
     | relational_expr T_GE additive_expr {
-        ASTNode* l = grab($1.ptr);
-        ASTNode* r = grab($3.ptr);
+        ASTNode *l, *r;
+        grabPair($1.ptr, $3.ptr, l, r);
         $$.ptr = new BinaryOpNode(T_GE, std::unique_ptr<ASTNode>(l), std::unique_ptr<ASTNode>(r), yylineno);
     }
     ;
@@ -1038,13 +1035,13 @@ relational_expr:
 additive_expr:
     multiplicative_expr { }
     | additive_expr '+' multiplicative_expr {
-        ASTNode* l = grab($1.ptr);
-        ASTNode* r = grab($3.ptr);
+        ASTNode *l, *r;
+        grabPair($1.ptr, $3.ptr, l, r);
         $$.ptr = new BinaryOpNode(T_PLUS, std::unique_ptr<ASTNode>(l), std::unique_ptr<ASTNode>(r), yylineno);
     }
     | additive_expr '-' multiplicative_expr {
-        ASTNode* l = grab($1.ptr);
-        ASTNode* r = grab($3.ptr);
+        ASTNode *l, *r;
+        grabPair($1.ptr, $3.ptr, l, r);
         $$.ptr = new BinaryOpNode(T_MINUS, std::unique_ptr<ASTNode>(l), std::unique_ptr<ASTNode>(r), yylineno);
     }
     ;
@@ -1052,13 +1049,13 @@ additive_expr:
 multiplicative_expr:
     unary_expr { }
     | multiplicative_expr '*' unary_expr {
-        ASTNode* l = grab($1.ptr);
-        ASTNode* r = grab($3.ptr);
+        ASTNode *l, *r;
+        grabPair($1.ptr, $3.ptr, l, r);
         $$.ptr = new BinaryOpNode(T_MULT, std::unique_ptr<ASTNode>(l), std::unique_ptr<ASTNode>(r), yylineno);
     }
     | multiplicative_expr '/' unary_expr {
-        ASTNode* l = grab($1.ptr);
-        ASTNode* r = grab($3.ptr);
+        ASTNode *l, *r;
+        grabPair($1.ptr, $3.ptr, l, r);
         $$.ptr = new BinaryOpNode(T_DIV, std::unique_ptr<ASTNode>(l), std::unique_ptr<ASTNode>(r), yylineno);
     }
     ;
@@ -1066,27 +1063,27 @@ multiplicative_expr:
 unary_expr:
     postfix_expr { }
     | '-' unary_expr %prec UMINUS {
-        ASTNode* o = grab($2.ptr);
-        $$.ptr = new UnaryOpNode(T_MINUS, std::unique_ptr<ASTNode>(o), yylineno);
+        auto o = adopt($2.ptr);
+        $$.ptr = new UnaryOpNode(T_MINUS, std::move(o), yylineno);
     }
     | '!' unary_expr {
-        ASTNode* o = grab($2.ptr);
-        $$.ptr = new UnaryOpNode(T_NOT, std::unique_ptr<ASTNode>(o), yylineno);
+        auto o = adopt($2.ptr);
+        $$.ptr = new UnaryOpNode(T_NOT, std::move(o), yylineno);
     }
     | '&' unary_expr {
-        ASTNode* o = grab($2.ptr);
-        $$.ptr = new UnaryOpNode('&', std::unique_ptr<ASTNode>(o), yylineno);
+        auto o = adopt($2.ptr);
+        $$.ptr = new UnaryOpNode('&', std::move(o), yylineno);
     }
     | '*' unary_expr %prec UMINUS {
-        ASTNode* o = grab($2.ptr);
-        $$.ptr = new UnaryOpNode('*', std::unique_ptr<ASTNode>(o), yylineno);
+        auto o = adopt($2.ptr);
+        $$.ptr = new UnaryOpNode('*', std::move(o), yylineno);
     }
     ;
 
 postfix_expr:
     postfix_expr '(' arg_list ')' {
-        ASTNode* callee = grab($1.ptr);
-        auto* call = new CallNode(std::unique_ptr<ASTNode>(callee), yylineno);
+        auto callee = adopt($1.ptr);
+        auto* call = new CallNode(std::move(callee), yylineno);
         if ($3.ptr) {
             MultiNode* args = (MultiNode*)$3.ptr;
             for (auto& arg : args->children)
@@ -1097,30 +1094,25 @@ postfix_expr:
     }
     | primary_expr { }
     | postfix_expr '[' expression ']' {
-        ASTNode* a = grab($1.ptr);
-        ASTNode* i = grab($3.ptr);
-        $$.ptr = new ArraySubscriptNode(std::unique_ptr<ASTNode>(a), std::unique_ptr<ASTNode>(i), yylineno);
+        auto i = adopt($3.ptr);
+        auto a = adopt($1.ptr);
+        $$.ptr = new ArraySubscriptNode(std::move(a), std::move(i), yylineno);
     }
     | postfix_expr '.' T_IDENTIFIER {
-        ASTNode* obj = grab($1.ptr);
-        std::string member($3.sval);
-        free($3.sval);
-        $$.ptr = new MemberAccessNode(std::unique_ptr<ASTNode>(obj), member, false, yylineno);
+        auto obj = adopt($1.ptr);
+        std::string member = takeIdentName($3.ptr);
+        $$.ptr = new MemberAccessNode(std::move(obj), member, false, yylineno);
     }
     | postfix_expr T_PTR_OP T_IDENTIFIER {
-        ASTNode* obj = grab($1.ptr);
-        std::string member($3.sval);
-        free($3.sval);
-        $$.ptr = new MemberAccessNode(std::unique_ptr<ASTNode>(obj), member, true, yylineno);
+        auto obj = adopt($1.ptr);
+        std::string member = takeIdentName($3.ptr);
+        $$.ptr = new MemberAccessNode(std::move(obj), member, true, yylineno);
     }
     ;
 
 primary_expr:
     T_IDENTIFIER {
-        std::string name($1.sval);
-        free($1.sval);
-        $1.sval = nullptr;
-        $$.ptr = new IdentifierNode(name, yylineno);
+        $$.ptr = adopt($1.ptr).release();
     }
     | T_CONSTANT {
         $$.ptr = new IntegerNode($1.ival, yylineno);
@@ -1129,11 +1121,10 @@ primary_expr:
         $$.ptr = new FloatNode($1.fval, yylineno);
     }
     | T_STRING_LITERAL {
-        $$.ptr = new StringNode($1.sval, yylineno);
-        free($1.sval);
+        $$.ptr = adopt($1.ptr).release();
     }
     | '(' expression ')' {
-        $$.ptr = grab($2.ptr);
+        $$.ptr = adopt($2.ptr).release();
     }
     ;
 

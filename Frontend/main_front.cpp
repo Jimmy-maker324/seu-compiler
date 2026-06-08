@@ -186,6 +186,7 @@ int main(int argc, char** argv) {
         printer.print(astRoot, detailOut);
         detailOut << "\n";
 
+        if (false) {
         ASTDotExporter dotter;
         dotter.exportToFile(astRoot, "output/ast.dot");
         detailOut << "========== 语法树 (Graphviz) ==========\n";
@@ -196,6 +197,9 @@ int main(int argc, char** argv) {
         } else {
             detailOut << "  未生成 output/ast.png（请安装 Graphviz 并将 dot 加入 PATH）\n\n";
             printf("语法树已写入 %s，output/ast.dot 已导出（未找到 dot，跳过 ast.png）\n", detailPath);
+        }
+        } else {
+            printf("语法树已写入 %s\n", detailPath);
         }
 
         printf("语义分析... ");

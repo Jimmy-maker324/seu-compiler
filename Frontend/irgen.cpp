@@ -19,6 +19,7 @@
  *
  * 【变量命名】作用域栈 + 源名映射：全局变量保留源名，函数内局部/形参
  *   生成唯一 IR 名（如 x_0、x_1），内层块遮蔽外层同名变量时互不覆盖
+ * 【字符串】字面量生成 (str, "...", , strN)，类型为 char*
  *
  * @context 东南大学（SEU）编译原理专题实践 — Seu 编译器项目
  */
@@ -28,6 +29,27 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+
+namespace {
+
+/** @brief 将字符串内容编码为 IR 字面量（带引号与转义） */
+std::string irQuoteString(const std::string& s) {
+    std::string out = "\"";
+    for (char c : s) {
+        switch (c) {
+            case '\\': out += "\\\\"; break;
+            case '"':  out += "\\\""; break;
+            case '\n': out += "\\n"; break;
+            case '\t': out += "\\t"; break;
+            case '\r': out += "\\r"; break;
+            default:   out += c; break;
+        }
+    }
+    out += "\"";
+    return out;
+}
+
+} // namespace
 
 /** @brief 初始化输出路径与计数器 */
 IRGenerator::IRGenerator(const std::string& outFile)
@@ -180,6 +202,7 @@ std::string IRGenerator::visit(ASTNode* node) {
         case NodeKind::Identifier: return visitIdentifier((IdentifierNode*)node);
         case NodeKind::Integer:  return visitInteger((IntegerNode*)node);
         case NodeKind::Float:    return visitFloat((FloatNode*)node);
+        case NodeKind::String:   return visitString((StringNode*)node);
         case NodeKind::Call:     return visitCall((CallNode*)node);
         case NodeKind::ArraySubscript: {
             auto* sub = (ArraySubscriptNode*)node;
@@ -323,6 +346,13 @@ std::string IRGenerator::visitFloat(FloatNode* num) {
     std::ostringstream oss;
     oss << num->value;
     return oss.str();
+}
+
+/** @brief 字符串常量：(str, "...", , strN)，结果为 char* 符号 */
+std::string IRGenerator::visitString(StringNode* str) {
+    std::string sym = "str" + std::to_string(stringCounter_++);
+    emit("str", irQuoteString(str->value), "", sym);
+    return sym;
 }
 
 /** @brief 先求值各实参并 emit param，再 emit call */
@@ -544,6 +574,7 @@ void IRGenerator::generate(ASTNode* root) {
     if (!root || root->kind != NodeKind::Program) return;
     scopeStack_.clear();
     varUidCounter_ = 0;
+    stringCounter_ = 0;
     skipCompoundScope_ = false;
     pushScope();
     auto* prog = (MultiNode*)root;

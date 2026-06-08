@@ -38,3 +38,8 @@ bool irIsConstant(const std::string& s) {
 bool irIsTemp(const std::string& s) {
     return s.size() >= 2 && s[0] == 't' && irIsIntegerLiteral(s.substr(1));
 }
+
+bool irIsStringSymbol(const std::string& s) {
+    if (s.size() < 4 || s.compare(0, 3, "str") != 0) return false;
+    return irIsIntegerLiteral(s.substr(3));
+}

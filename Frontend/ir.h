@@ -16,6 +16,7 @@ struct IRQuad {
 
 bool irIsIntegerLiteral(const std::string& s);
 bool irIsFloatLiteral(const std::string& s);
+bool irIsStringSymbol(const std::string& s);
 bool irIsConstant(const std::string& s);
 bool irIsTemp(const std::string& s);
 

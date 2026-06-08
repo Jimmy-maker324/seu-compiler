@@ -53,6 +53,8 @@ private:
     std::string visitInteger(IntegerNode* num);
     /** @brief 浮点字面量转为字符串 */
     std::string visitFloat(FloatNode* num);
+    /** @brief 字符串字面量：生成 str 四元式并返回符号名 strN */
+    std::string visitString(StringNode* str);
     /** @brief 生成函数调用四元式 */
     std::string visitCall(CallNode* call);
     /** @brief 访问语句节点 */
@@ -70,6 +72,7 @@ private:
     /** @brief 作用域栈：每层 map 源变量名 → 唯一 IR 名（支持块遮蔽） */
     std::vector<std::unordered_map<std::string, std::string>> scopeStack_;
     int varUidCounter_ = 0;          ///< 局部变量 IR 名后缀计数
+    int stringCounter_ = 0;          ///< 字符串常量 strN 编号
     bool skipCompoundScope_ = false; ///< 函数体最外层块不再嵌套开 scope
 
     void pushScope();

@@ -45,7 +45,10 @@
 ```bat
 build.bat
 build\compiler.exe examples\test.c
+test.bat
 ```
+
+`test.bat` 会批量运行 `examples/` 下回归用例并校验退出码（见 [回归测试](#回归测试)）。
 
 构建成功后得到 `build\compiler.exe`。对 `examples\test.c` 编译后，`output/` 目录下通常会有：
 
@@ -198,8 +201,30 @@ build\compiler.exe examples\test.c -o output\out.txt
 | 控制流 | `if`、`goto`、`label` |
 | 其它 | `copy`（一元拷贝，可被 DCE 消除） |
 | 调用 | `param`（传实参/接形参）、`call`（含函数指针间接调用） |
+| 字符串 | `str`（定义只读字符串常量，结果为 `strN`，表示 `char*`） |
 
 **局部变量命名**：IR 生成时维护作用域栈；全局变量保留源名，函数形参与局部变量（含块内声明）映射为唯一 IR 名（如 `x_0`、`x_1`），内层块遮蔽外层同名变量时各自独立，不会互相覆盖。
+
+**字符串示例**（`examples/string_test.c` 编译成功后，`output/output.ir` 片段）：
+
+```text
+(str, "hello", , str0)
+(=, str0, , msg_1)
+(param, msg_1, , )
+(call, echo, 1, t0)
+```
+
+### AST 语义值栈约定
+
+`YYSTYPE` 为 union（`sval` / `ptr` 等字段共享存储）。为避免归约后仍读取已失效的 `sval` 导致 AST 损坏，当前实现采用：
+
+| 位置 | 约定 |
+|------|------|
+| **移进**（`SeuYacc/code_gen.cpp`） | `T_IDENTIFIER` / `T_STRING_LITERAL` 移进时立即构造 `IdentifierNode` / `StringNode` 写入 `ptr` |
+| **声明**（`grammar/yacc.y`） | 通过 `takeIdentName()` 从临时 `IdentifierNode` 取名字，不再 `free(sval)` |
+| **表达式** | `primary_expr` 对标识符/字符串仅 `adopt($1.ptr)` 透传 |
+
+修改 `grammar/yacc.y` 或 `SeuYacc/code_gen.cpp` 后须完整运行 `build.bat` 重新生成 `generated/yyparse.cpp`。
 
 ---
 
@@ -261,7 +286,7 @@ C 语言 **MiniC 子集**，文法见 `grammar/yacc.y`，词法见 `grammar/lex.
 | 语句 | 复合语句、`if`/`else`、`while`、`for`、`switch`/`case`/`default`、`return`、`break`、`continue` |
 | 声明 | 块内/全局变量声明，支持 `type id = expr` 带初值形式 |
 | 表达式 | 赋值、逻辑与/或、相等/关系、加减乘除、一元 `!`/`-`/`&`/`*`、调用、下标、成员访问 |
-| 字面量 | 整型、浮点、字符串（部分场景） |
+| 字面量 | 整型、浮点、**字符串**（类型 `char*`，IR 为 `str` 四元式） |
 
 ### 示例
 
@@ -273,7 +298,43 @@ C 语言 **MiniC 子集**，文法见 `grammar/yacc.y`，词法见 `grammar/lex.
 | `examples/bad_break.c` | 循环外 `break`（语义失败，exit 2） |
 | `examples/bad_continue.c` | 循环外 `continue`（语义失败，exit 2） |
 | `examples/dup_case.c` | `switch` 重复 `case`（语义失败，exit 2） |
+| `examples/bad_void_return.c` | `void` 函数返回值（语义失败，exit 2） |
+| `examples/bad_empty_return.c` | 非 `void` 函数空 `return`（语义失败，exit 2） |
+| `examples/bad_return_type.c` | 返回值类型不匹配（语义失败，exit 2） |
+| `examples/string_test.c` | 字符串字面量与 `char*` 传参（exit 0） |
+| `examples/bad_string_int.c` | 整型变量赋字符串（语义失败，exit 2） |
 | `examples/syntax_err.c` | 语法错误（exit 1） |
+
+### 回归测试
+
+在项目根目录执行：
+
+```bat
+test.bat
+```
+
+若 `build\compiler.exe` 不存在，脚本会先调用 `build.bat`。已有编译器时跳过构建：
+
+```bat
+test.bat --no-build
+```
+
+| 用例 | 期望退出码 | 说明 |
+|------|------------|------|
+| `test.c` | 0 | 综合示例，应生成 `output/output.ir` |
+| `block_scope.c` | 0 | 块作用域与 IR 变量遮蔽 |
+| `syntax_err.c` | 1 | 语法错误 |
+| `redef.c` | 2 | 符号重定义 |
+| `bad_break.c` | 2 | 循环外 `break` |
+| `bad_continue.c` | 2 | 循环外 `continue` |
+| `dup_case.c` | 2 | 重复 `case` |
+| `bad_void_return.c` | 2 | `void` 函数带返回值 |
+| `bad_empty_return.c` | 2 | 非 `void` 函数空 `return` |
+| `bad_return_type.c` | 2 | 返回值类型不匹配 |
+| `string_test.c` | 0 | 字符串字面量与 `char*` |
+| `bad_string_int.c` | 2 | 整型赋字符串 |
+
+全部通过时 `test.bat` 退出码为 **0**；任一失败为 **1**。
 
 ### 限制
 
@@ -290,7 +351,8 @@ C 语言 **MiniC 子集**，文法见 `grammar/yacc.y`，词法见 `grammar/lex.
 | 重定义 | 同一作用域内重复声明同一标识符报错 |
 | `break` / `continue` | 分别须在循环/`switch` 内、循环内使用 |
 | `switch` | `case` 标签值不可重复 |
-| 赋值 | 数值类型间允许隐式转换；指针仅接受同类型或函数指针兼容，**不接受**整型赋给指针 |
+| `return` | `void` 函数不得带返回值；非 `void` 函数 `return` 须带兼容类型的表达式 |
+| 赋值 | 数值类型间允许隐式转换；指针仅接受同类型指针或函数指针兼容；**字符串字面量**（`char*`）可赋给 `char*` 及带初值的 `char*` 声明 |
 
 ---
 
@@ -340,6 +402,7 @@ build\seuyacc.exe --lalr --print-dfa grammar\yacc.y generated/yyparse.cpp
 seu-compiler/
 ├── README.md              # 本说明
 ├── build.bat              # 一键构建
+├── test.bat               # 回归测试（校验 examples 退出码）
 ├── gen_docs.bat           # Doxygen 生成文档
 │
 ├── grammar/               # 文法定义（生成器输入）
@@ -353,6 +416,11 @@ seu-compiler/
 │   ├── bad_break.c        # 语义错误：循环外 break
 │   ├── bad_continue.c     # 语义错误：循环外 continue
 │   ├── dup_case.c         # 语义错误：重复 case
+│   ├── bad_void_return.c  # 语义错误：void 函数返回值
+│   ├── bad_empty_return.c # 语义错误：非 void 空 return
+│   ├── bad_return_type.c  # 语义错误：返回值类型不匹配
+│   ├── string_test.c      # 字符串字面量与 char*
+│   ├── bad_string_int.c   # 语义错误：整型赋字符串
 │   └── syntax_err.c       # 语法错误示例
 │
 ├── config/                # 工具配置
@@ -417,7 +485,8 @@ seu-compiler/
 
 ### 4. 文法与 AST（约 2 小时）
 
-24. `grammar/yacc.y` → 25. `ast.h` → 26. `type.h`、`type.cpp` → 27. `seulex.h`  
+24. `grammar/yacc.y`（含 `takeIdentName`、`adopt`/`grab` 约定）→ 25. `ast.h` → 26. `type.h`、`type.cpp` → 27. `seulex.h`  
+   对照 `SeuYacc/code_gen.cpp` 中移进时对 `T_IDENTIFIER` / `T_STRING_LITERAL` 的 AST 构造逻辑。
 
 ### 5. 编译器前端（约 2 小时）
 
@@ -475,6 +544,10 @@ seu-compiler/
 ```bat
 :: 构建完整编译器
 build.bat
+
+:: 回归测试（examples 退出码 + 成功用例 IR 产物）
+test.bat
+test.bat --no-build
 
 :: 编译示例并查看各阶段输出
 build\compiler.exe examples\test.c

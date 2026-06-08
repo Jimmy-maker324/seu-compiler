@@ -142,5 +142,6 @@ std::string Type::toString() const {
 Type* BasicType::Void   = new BasicType(TypeKind::Void);
 Type* BasicType::Int    = new BasicType(TypeKind::Int);
 Type* BasicType::Char   = new BasicType(TypeKind::Char);
+Type* BasicType::CharPtr = new PointerType(BasicType::Char);
 Type* BasicType::Float  = new BasicType(TypeKind::Float);
 Type* BasicType::Double = new BasicType(TypeKind::Double);

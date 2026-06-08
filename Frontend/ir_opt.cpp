@@ -76,6 +76,10 @@ void applyDefKill(ValMap& env, const IRQuad& q) {
             killAllTemps(env);
         return;
     }
+    if (q.op == "str") {
+        if (!q.result.empty()) killVar(env, q.result);
+        return;
+    }
     if (isPureComputeOp(q.op) || q.op == "[]"
         || q.op == "." || q.op == "->" || q.op == "&"
         || q.op == "&." || q.op == "&->" || q.op == "&[]") {
@@ -194,8 +198,8 @@ std::unordered_set<std::string> defsInRange(const std::vector<IRQuad>& code,
     for (size_t i = start; i <= end && i < code.size(); ++i) {
         const IRQuad& q = code[i];
         if (q.op == "label") continue;
-        if (!q.result.empty()
-            && (q.op == "=" || isPureComputeOp(q.op)
+            if (!q.result.empty()
+                && (q.op == "=" || q.op == "str" || isPureComputeOp(q.op)
                 || q.op == "[]" || q.op == "." || q.op == "->"
                 || q.op == "call" || q.op == "&" || q.op == "&."
                 || q.op == "&->" || q.op == "&[]")) {
