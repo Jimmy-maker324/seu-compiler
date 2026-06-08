@@ -215,7 +215,7 @@ build\compiler.exe examples\test.c -o output\out.txt
 | 调用 | `param`（传实参/接形参）、`call`（含函数指针间接调用） |
 | 字符串 | `str`（定义只读字符串常量，结果为 `strN`，表示 `char*`） |
 
-**局部变量命名**：IR 生成时维护作用域栈；全局变量保留源名，函数形参与局部变量（含块内声明）映射为唯一 IR 名（如 `x_0`、`x_1`），内层块遮蔽外层同名变量时各自独立，不会互相覆盖。
+**局部变量命名**：`Symbol::irName` 在 `addSymbol` 时分配；语义分析与 IR 生成共用 `enterScope` / `leaveScope` / `getSymbol`（全局/函数名保留源名，其它局部为 `name_N`）。
 
 **字符串示例**（`examples/string_test.c` 编译成功后，`output/output.ir` 片段）：
 

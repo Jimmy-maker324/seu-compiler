@@ -21,12 +21,13 @@
  * @brief 符号表项，描述一个标识符的名称、类型及存储信息
  */
 struct Symbol {
-    std::string name;   ///< 标识符名
-    Type* type;         ///< 语义类型
-    bool isFunction;    ///< true 表示函数符号，false 表示变量
+    std::string name;    ///< 标识符名（源代码）
+    std::string irName;  ///< IR 中的变量/函数名（全局/函数名保留源名，局部为 name_N）
+    Type* type;          ///< 语义类型
+    bool isFunction;     ///< true 表示函数符号，false 表示变量
     /** @brief 构造符号表项 */
     Symbol(const std::string& n, Type* t, bool isFunc = false)
-        : name(n), type(t), isFunction(isFunc) {}
+        : name(n), irName(n), type(t), isFunction(isFunc) {}
 };
 
 /**
@@ -55,6 +56,8 @@ extern Scope* currentScope;
 void enterScope();
 /** @brief 离开当前作用域并释放其符号 */
 void leaveScope();
+/** @brief 清空符号表（弹出全部作用域）并重置局部变量 IR 名计数 */
+void resetSymbolTable();
 /** @brief 在当前作用域添加符号；若无作用域则自动创建全局作用域 */
 Symbol* addSymbol(const std::string& name, Type* type, bool isFunc = false);
 /** @brief 从当前作用域链查找符号 */

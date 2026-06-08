@@ -6,7 +6,7 @@
  *
  * 【数据结构】
  *   Scope 链：parent 指针 + unordered_map<name, Symbol*>
- *   Symbol：name, Type*, isFunction
+ *   Symbol：name, irName, Type*, isFunction
  *
  * 【visitStmt 流程（声明/语句）】
  *   VarDecl：查重 → addSymbol
@@ -172,10 +172,12 @@ void TypeChecker::addSymbolLogged(const std::string& name, Type* type, bool isFu
     }
     addSymbol(name, type, isFunc);
     if (report_) {
+        Symbol* sym = getSymbol(name);
         symbolLog_ << "  [L" << scopeDepth_ << "] + "
                    << std::setw(16) << std::left << name << std::right
                    << " : " << (type ? type->toString() : "?")
                    << "  (" << (isFunc ? "函数" : "变量")
+                   << ", IR:" << (sym ? sym->irName : name)
                    << ", 行 " << line << ")\n";
     }
 }
@@ -213,8 +215,7 @@ void TypeChecker::check(ASTNode* root, std::ostream* report) {
     skipCompoundScope_ = false;
     currentReturnType_ = nullptr;
 
-    while (currentScope)
-        leaveScope();
+    resetSymbolTable();
 
     if (!root || root->kind != NodeKind::Program) {
         flushReport();

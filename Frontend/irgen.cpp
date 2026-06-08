@@ -17,14 +17,14 @@
  *
  * 【赋值】标识符直接 emit(=, rhs, "", lhs)；数组 emit([]=, arr, idx, rhs)
  *
- * 【变量命名】作用域栈 + 源名映射：全局变量保留源名，函数内局部/形参
- *   生成唯一 IR 名（如 x_0、x_1），内层块遮蔽外层同名变量时互不覆盖
+ * 【变量命名】符号表 Symbol::irName：与语义分析共用 enterScope/leaveScope/addSymbol
  * 【字符串】字面量生成 (str, "...", , strN)，类型为 char*
  *
  * @context 东南大学（SEU）编译原理专题实践 — Seu 编译器项目
  */
 
 #include "irgen.h"
+#include "symbol.h"
 #include "common_defs.h"
 #include <fstream>
 #include <iostream>
@@ -53,34 +53,7 @@ std::string irQuoteString(const std::string& s) {
 
 /** @brief 初始化输出路径与计数器 */
 IRGenerator::IRGenerator(const std::string& outFile)
-    : outFile(outFile), tempCounter(0), labelCounter(0), varUidCounter_(0) {}
-
-void IRGenerator::pushScope() {
-    scopeStack_.emplace_back();
-}
-
-void IRGenerator::popScope() {
-    if (!scopeStack_.empty())
-        scopeStack_.pop_back();
-}
-
-std::string IRGenerator::bindVar(const std::string& srcName) {
-    std::string irName = scopeStack_.size() <= 1
-        ? srcName
-        : srcName + "_" + std::to_string(varUidCounter_++);
-    if (!scopeStack_.empty())
-        scopeStack_.back()[srcName] = irName;
-    return irName;
-}
-
-std::string IRGenerator::resolveVar(const std::string& srcName) const {
-    for (auto it = scopeStack_.rbegin(); it != scopeStack_.rend(); ++it) {
-        auto found = it->find(srcName);
-        if (found != it->end())
-            return found->second;
-    }
-    return srcName;
-}
+    : outFile(outFile), tempCounter(0), labelCounter(0), stringCounter_(0) {}
 
 /** @brief 生成唯一临时变量名 t0, t1, t2, ... */
 std::string IRGenerator::newTemp() {
@@ -331,9 +304,10 @@ std::string IRGenerator::visitAssignOp(AssignOpNode* assign) {
     return lhs;
 }
 
-/** @brief 解析标识符为当前作用域下的 IR 变量名 */
+/** @brief 解析标识符为符号表中的 IR 名 */
 std::string IRGenerator::visitIdentifier(IdentifierNode* id) {
-    return resolveVar(id->name);
+    Symbol* sym = getSymbol(id->name);
+    return sym ? sym->irName : id->name;
 }
 
 /** @brief 整型常量直接作为操作数字符串 */
@@ -378,10 +352,10 @@ void IRGenerator::visitStmt(ASTNode* stmt) {
                 for (auto& child : block->children)
                     visitStmt(child.get());
             } else {
-                pushScope();
+                enterScope();
                 for (auto& child : block->children)
                     visitStmt(child.get());
-                popScope();
+                leaveScope();
             }
             break;
         }
@@ -393,11 +367,12 @@ void IRGenerator::visitStmt(ASTNode* stmt) {
         case NodeKind::VarDecl: {
             auto* decl = (MultiNode*)stmt;
             if (decl->children.size() >= 2) {
+                auto* tn = (TypeNode*)decl->children[0].get();
                 auto* id = (IdentifierNode*)decl->children[1].get();
-                std::string irName = bindVar(id->name);
+                Symbol* sym = addSymbol(id->name, tn->type, false);
                 if (decl->children.size() >= 3) {
                     std::string val = visit(decl->children[2].get());
-                    emit("=", val, "", irName);
+                    emit("=", val, "", sym->irName);
                 }
             }
             break;
@@ -538,10 +513,12 @@ void IRGenerator::visitStmt(ASTNode* stmt) {
             std::string savedFunc = currentFunc;
             if (func->children.size() >= 2) {
                 auto* id = (IdentifierNode*)func->children[1].get();
+                auto* retType = (TypeNode*)func->children[0].get();
+                addSymbol(id->name, retType->type, true);
                 currentFunc = id->name;
                 code.push_back({"func", id->name, "", ""});
             }
-            pushScope();
+            enterScope();
             size_t bodyIdx = 2;
             if (func->children.size() >= 4 &&
                 func->children[2]->kind == NodeKind::ParamList) {
@@ -549,9 +526,10 @@ void IRGenerator::visitStmt(ASTNode* stmt) {
                 for (auto& p : paramList->children) {
                     auto* paramDecl = (MultiNode*)p.get();
                     if (paramDecl->children.size() >= 2) {
+                        auto* tn = (TypeNode*)paramDecl->children[0].get();
                         auto* pid = (IdentifierNode*)paramDecl->children[1].get();
-                        std::string irName = bindVar(pid->name);
-                        emit("param", "", "", irName);
+                        Symbol* sym = addSymbol(pid->name, tn->type, false);
+                        emit("param", "", "", sym->irName);
                     }
                 }
                 bodyIdx = 3;
@@ -560,7 +538,7 @@ void IRGenerator::visitStmt(ASTNode* stmt) {
                 skipCompoundScope_ = true;
                 visitStmt(func->children[bodyIdx].get());
             }
-            popScope();
+            leaveScope();
             currentFunc = savedFunc;
             break;
         }
@@ -572,14 +550,13 @@ void IRGenerator::visitStmt(ASTNode* stmt) {
 /** @brief 遍历 Program 下所有顶层声明/定义生成 IR */
 void IRGenerator::generate(ASTNode* root) {
     if (!root || root->kind != NodeKind::Program) return;
-    scopeStack_.clear();
-    varUidCounter_ = 0;
+    resetSymbolTable();
     stringCounter_ = 0;
     skipCompoundScope_ = false;
-    pushScope();
+    enterScope();
     auto* prog = (MultiNode*)root;
     for (auto& decl : prog->children) {
         visitStmt(decl.get());
     }
-    popScope();
+    leaveScope();
 }

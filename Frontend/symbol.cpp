@@ -42,6 +42,16 @@ Symbol* Scope::lookup(const std::string& name) {
 /** @brief 全局当前作用域指针，初始为 nullptr（尚未进入任何作用域） */
 Scope* currentScope = nullptr;
 
+/** @brief 局部变量 IR 名后缀计数（全局/函数符号不参与） */
+static int varUidCounter = 0;
+
+/** @brief 清空符号表并重置 IR 局部名计数 */
+void resetSymbolTable() {
+    while (currentScope)
+        leaveScope();
+    varUidCounter = 0;
+}
+
 /** @brief 创建新作用域，parent 指向原 currentScope */
 void enterScope() {
     currentScope = new Scope(currentScope);
@@ -59,6 +69,11 @@ Symbol* addSymbol(const std::string& name, Type* type, bool isFunc) {
     if (!currentScope)
         enterScope();
     Symbol* sym = new Symbol(name, type, isFunc);
+    if (isFunc || !currentScope->parent) {
+        sym->irName = name;
+    } else {
+        sym->irName = name + "_" + std::to_string(varUidCounter++);
+    }
     currentScope->insert(sym);
     return sym;
 }
