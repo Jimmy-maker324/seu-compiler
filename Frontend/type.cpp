@@ -66,6 +66,39 @@ UnionType* defineUnionType(const std::string& name) {
     return ut;
 }
 
+Type* cloneType(Type* t) {
+    if (!t) return nullptr;
+    switch (t->kind) {
+        case TypeKind::Void:
+        case TypeKind::Int:
+        case TypeKind::Char:
+        case TypeKind::Float:
+        case TypeKind::Double:
+            return t;
+        case TypeKind::Pointer: {
+            auto* p = static_cast<PointerType*>(t);
+            return new PointerType(cloneType(p->base));
+        }
+        case TypeKind::Array: {
+            auto* a = static_cast<ArrayType*>(t);
+            return new ArrayType(cloneType(a->base), a->size);
+        }
+        case TypeKind::Function: {
+            auto* f = static_cast<FunctionType*>(t);
+            auto* nf = new FunctionType(cloneType(f->returnType));
+            for (Type* pt : f->paramTypes)
+                nf->addParam(cloneType(pt));
+            return nf;
+        }
+        case TypeKind::Struct:
+            return new StructType(static_cast<StructType*>(t)->name);
+        case TypeKind::Union:
+            return new UnionType(static_cast<UnionType*>(t)->name);
+        default:
+            return t;
+    }
+}
+
 /** @brief 递归将类型格式化为 C 风格字符串（如 int*、char[10]、struct Point） */
 std::string Type::toString() const {
     switch (kind) {

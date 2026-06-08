@@ -33,6 +33,9 @@ void yyerror(const char* s);
 /* 全局 AST 根节点，分析成功后由 program 规则赋值 */
 ASTNode* astRoot = nullptr;
 
+/** 语法错误计数（含 error 恢复后继续分析时的报错） */
+int parseErrorCount = 0;
+
 /* 从 void* 槽接管 AST 所有权，并清空槽位防止重复释放 */
 static std::unique_ptr<ASTNode> adopt(void*& p) {
     ASTNode* n = static_cast<ASTNode*>(p);
@@ -1063,8 +1066,9 @@ arg_list:
 
 %%
 
-/* 默认语法错误处理：输出行号与出错记号 */
+/* 默认语法错误处理：输出行号与出错记号，并累计错误数 */
 void yyerror(const char* s) {
+    ++parseErrorCount;
     fprintf(stderr, "[Syntax error] Line:%d, Error:%s, text:\"%s\"\n",
             yylineno, s, yytext ? yytext : "(null)");
 }

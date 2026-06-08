@@ -149,7 +149,7 @@ build\compiler.exe examples\test.c -o output\out.txt
 | 5 | 语义分析 | 通过 / 失败（含错误数） | `output/out.txt` 中符号表与类型检查 |
 | 6 | 中间代码 | 优化统计（仅语义通过时） | `output/output.ir`、`output/output_raw.ir` |
 
-语法分析失败时以非零退出码结束，不生成完整的 `output/ast.dot` / `output/output.ir`。  
+语法分析失败时以非零退出码结束（**1** = 语法错误，`yyparse` 失败或 `parseErrorCount > 0`），不生成 AST/IR。  
 语义分析失败（含符号重定义、类型错误）时退出码为 **2**，**不生成 IR**。
 
 ---
@@ -323,7 +323,8 @@ compiler（第七版）/
 │
 ├── examples/              # 示例源程序
 │   ├── test.c             # 综合特性示例
-│   └── redef.c            # 语义错误示例（符号重定义）
+│   ├── redef.c            # 语义错误示例（符号重定义）
+│   └── syntax_err.c       # 语法错误示例（parseErrorCount）
 │
 ├── config/                # 工具配置
 │   └── Doxyfile

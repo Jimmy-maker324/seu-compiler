@@ -38,6 +38,8 @@
 
 /** @brief 语法分析完成后由 yyparse 设置的全局 AST 根节点 */
 extern ASTNode* astRoot;
+/** @brief 语法错误计数（yacc.y 中 yyerror 递增） */
+extern int parseErrorCount;
 
 /** @brief Bison/Flex 生成的语法分析入口 */
 int yyparse(void);
@@ -156,18 +158,25 @@ int main(int argc, char** argv) {
 
     detailOut << "========== 语法分析 ==========\n";
     set_input(input);
+    parseErrorCount = 0;
     int result = yyparse();
 
-    if (result == 0) {
-        detailOut << "  语法分析成功（LR 归约完成，已构建 AST 根节点）\n\n";
-        printf("语法分析成功\n");
-    } else {
-        detailOut << "  语法分析失败\n\n";
-        printf("语法分析失败\n");
+    if (result != 0 || parseErrorCount > 0) {
+        if (result == 0 && parseErrorCount > 0) {
+            detailOut << "  语法分析完成但存在 " << parseErrorCount
+                      << " 个错误（已部分恢复，AST/IR 不可靠）\n\n";
+            printf("语法分析失败（%d 个语法错误）\n", parseErrorCount);
+        } else {
+            detailOut << "  语法分析失败\n\n";
+            printf("语法分析失败\n");
+        }
         detailOut.close();
         free(input);
-        return result;
+        return result != 0 ? result : 1;
     }
+
+    detailOut << "  语法分析成功（LR 归约完成，已构建 AST 根节点）\n\n";
+    printf("语法分析成功\n");
 
     free(input);
 
@@ -218,6 +227,6 @@ int main(int argc, char** argv) {
         detailOut.close();
     }
 
-    return result;
+    return 0;
 }
 

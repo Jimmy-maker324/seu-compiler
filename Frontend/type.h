@@ -158,4 +158,7 @@ public:
 UnionType* lookupUnionType(const std::string& name);
 UnionType* defineUnionType(const std::string& name);
 
+/** @brief 深拷贝类型树（基本类型与已注册 struct/union  tag 复用，不共享可变子树） */
+Type* cloneType(Type* t);
+
 #endif

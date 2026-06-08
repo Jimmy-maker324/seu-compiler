@@ -103,25 +103,45 @@ static bool isLogicalOp(int op) {
     return op == T_AND_OP || op == T_OR_OP;
 }
 
-/** @brief 将字段类型中的 struct/union 占位符解析为已注册类型 */
-static Type* resolveFieldType(Type* ftype) {
-    if (ftype->kind == TypeKind::Pointer) {
-        ((PointerType*)ftype)->base = resolveFieldType(((PointerType*)ftype)->base);
-        return ftype;
+/** @brief clone 并解析类型树（不修改 AST 上的 Type*） */
+Type* TypeChecker::resolveTypeTree(Type* ftype, int line, bool reportUnknownTag) {
+    if (!ftype) return BasicType::Int;
+    Type* t = cloneType(ftype);
+    if (t->kind == TypeKind::Pointer) {
+        static_cast<PointerType*>(t)->base =
+            resolveTypeTree(static_cast<PointerType*>(t)->base, line, reportUnknownTag);
+        return t;
     }
-    if (ftype->kind == TypeKind::Array) {
-        ((ArrayType*)ftype)->base = resolveFieldType(((ArrayType*)ftype)->base);
-        return ftype;
+    if (t->kind == TypeKind::Array) {
+        static_cast<ArrayType*>(t)->base =
+            resolveTypeTree(static_cast<ArrayType*>(t)->base, line, reportUnknownTag);
+        return t;
     }
-    if (ftype->kind == TypeKind::Struct) {
-        StructType* reg = lookupStructType(((StructType*)ftype)->name);
-        if (reg && !reg->members.empty()) return reg;
+    if (t->kind == TypeKind::Function) {
+        auto* ft = static_cast<FunctionType*>(t);
+        for (size_t i = 0; i < ft->paramTypes.size(); ++i)
+            ft->paramTypes[i] = resolveTypeTree(ft->paramTypes[i], line, reportUnknownTag);
+        return t;
     }
-    if (ftype->kind == TypeKind::Union) {
-        UnionType* reg = lookupUnionType(((UnionType*)ftype)->name);
-        if (reg && !reg->members.empty()) return reg;
+    if (t->kind == TypeKind::Struct) {
+        StructType* reg = lookupStructType(static_cast<StructType*>(t)->name);
+        if (!reg || reg->members.empty()) {
+            if (reportUnknownTag)
+                error("unknown struct type: " + static_cast<StructType*>(t)->name, line);
+            return BasicType::Int;
+        }
+        return reg;
     }
-    return ftype;
+    if (t->kind == TypeKind::Union) {
+        UnionType* reg = lookupUnionType(static_cast<UnionType*>(t)->name);
+        if (!reg || reg->members.empty()) {
+            if (reportUnknownTag)
+                error("unknown union type: " + static_cast<UnionType*>(t)->name, line);
+            return BasicType::Int;
+        }
+        return reg;
+    }
+    return t;
 }
 
 void TypeChecker::enterScopeLogged() {
@@ -437,40 +457,9 @@ Type* TypeChecker::visitMemberAccess(MemberAccessNode* ma) {
     return mt ? mt : BasicType::Int;
 }
 
-/** @brief 递归解析变量类型中的 struct/union/指针/数组/函数组件 */
+/** @brief 递归解析变量类型（clone 后解析，不修改 AST 上的 Type*） */
 Type* TypeChecker::resolveVarType(Type* varType, int line) {
-    if (!varType) return BasicType::Int;
-    if (varType->kind == TypeKind::Pointer) {
-        ((PointerType*)varType)->base = resolveVarType(((PointerType*)varType)->base, line);
-        return varType;
-    }
-    if (varType->kind == TypeKind::Array) {
-        ((ArrayType*)varType)->base = resolveVarType(((ArrayType*)varType)->base, line);
-        return varType;
-    }
-    if (varType->kind == TypeKind::Function) {
-        FunctionType* ft = (FunctionType*)varType;
-        for (size_t i = 0; i < ft->paramTypes.size(); ++i)
-            ft->paramTypes[i] = resolveVarType(ft->paramTypes[i], line);
-        return varType;
-    }
-    if (varType->kind == TypeKind::Struct) {
-        StructType* reg = lookupStructType(((StructType*)varType)->name);
-        if (!reg || reg->members.empty()) {
-            error("unknown struct type: " + ((StructType*)varType)->name, line);
-            return BasicType::Int;
-        }
-        return reg;
-    }
-    if (varType->kind == TypeKind::Union) {
-        UnionType* reg = lookupUnionType(((UnionType*)varType)->name);
-        if (!reg || reg->members.empty()) {
-            error("unknown union type: " + ((UnionType*)varType)->name, line);
-            return BasicType::Int;
-        }
-        return reg;
-    }
-    return varType;
+    return resolveTypeTree(varType, line, true);
 }
 
 /** @brief 语句访问分发：处理声明、复合语句、控制流与函数定义 */
@@ -518,7 +507,7 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
                     error("duplicate struct member: " + fid->name, field->line);
                     continue;
                 }
-                st->addMember(fid->name, resolveFieldType(ftn->type));
+                st->addMember(fid->name, resolveTypeTree(ftn->type, field->line, false));
             }
             logTypeCheck("行 " + std::to_string(def->line) + ": 定义结构体 "
                          + tag->name + " (" + std::to_string(st->members.size()) + " 成员)");
@@ -542,7 +531,7 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
                     error("duplicate union member: " + fid->name, field->line);
                     continue;
                 }
-                ut->addMember(fid->name, resolveFieldType(ftn->type));
+                ut->addMember(fid->name, resolveTypeTree(ftn->type, field->line, false));
             }
             logTypeCheck("行 " + std::to_string(def->line) + ": 定义联合体 "
                          + tag->name + " (" + std::to_string(ut->members.size()) + " 成员)");
@@ -610,7 +599,7 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
             if (func->children.size() < 3) break;
             auto* retType = static_cast<TypeNode*>(func->children[0].get())->type;
             auto* funcId = static_cast<IdentifierNode*>(func->children[1].get());
-            auto* ft = new FunctionType(retType);
+            auto* ft = new FunctionType(resolveVarType(retType, funcId->line));
             size_t bodyIdx = 2;
             // 若有 ParamList，则解析形参类型并注册函数符号
             if (func->children[2]->kind == NodeKind::ParamList) {
