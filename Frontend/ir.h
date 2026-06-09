@@ -19,5 +19,9 @@ bool irIsFloatLiteral(const std::string& s);
 bool irIsStringSymbol(const std::string& s);
 bool irIsConstant(const std::string& s);
 bool irIsTemp(const std::string& s);
+bool irIsLabel(const std::string& s);
+bool irIsRelationalOp(const std::string& op);
+/** @brief 关系比较四元式且 result 为标签：关系成立时跳转到 result */
+bool irIsCondJump(const IRQuad& q);
 
 #endif

@@ -43,3 +43,16 @@ bool irIsStringSymbol(const std::string& s) {
     if (s.size() < 4 || s.compare(0, 3, "str") != 0) return false;
     return irIsIntegerLiteral(s.substr(3));
 }
+
+bool irIsLabel(const std::string& s) {
+    return s.size() >= 2 && s[0] == 'L' && irIsIntegerLiteral(s.substr(1));
+}
+
+bool irIsRelationalOp(const std::string& op) {
+    return op == "==" || op == "!=" || op == "<" || op == "<="
+        || op == ">" || op == ">=";
+}
+
+bool irIsCondJump(const IRQuad& q) {
+    return irIsRelationalOp(q.op) && irIsLabel(q.result);
+}

@@ -23,9 +23,13 @@ bool isPureComputeOp(const std::string& op) {
         || op == "neg" || op == "not" || op == "copy";
 }
 
+bool isPureComputeQuad(const IRQuad& q) {
+    return isPureComputeOp(q.op) && !irIsCondJump(q);
+}
+
 bool hasSideEffect(const IRQuad& q) {
     return q.op == "func" || q.op == "param" || q.op == "call"
-        || q.op == "return" || q.op == "goto" || q.op == "if"
+        || q.op == "return" || q.op == "goto" || irIsCondJump(q)
         || q.op == "label" || q.op == "=" || q.op == "[]="
         || q.op == ".=" || q.op == "->=" || q.op == "*="
         || q.op == "[]" || q.op == "." || q.op == "->"
@@ -34,8 +38,8 @@ bool hasSideEffect(const IRQuad& q) {
 }
 
 bool isControlFlow(const IRQuad& q) {
-    return q.op == "goto" || q.op == "if" || q.op == "label"
-        || q.op == "return" || q.op == "func";
+    return q.op == "goto" || q.op == "label"
+        || q.op == "return" || q.op == "func" || irIsCondJump(q);
 }
 
 bool rhsInResultField(const std::string& op) {
@@ -47,10 +51,6 @@ void collectUses(const IRQuad& q, std::unordered_set<std::string>& uses) {
     if (!q.arg2.empty() && !irIsConstant(q.arg2)) uses.insert(q.arg2);
     if (rhsInResultField(q.op) && !q.result.empty() && !irIsConstant(q.result))
         uses.insert(q.result);
-    if (q.op == "if" && !q.result.empty() && !irIsConstant(q.result)) {
-        if (q.result.compare(0, 5, "goto ") != 0)
-            uses.insert(q.result);
-    }
 }
 
 void killVar(ValMap& env, const std::string& v) {
@@ -80,7 +80,7 @@ void applyDefKill(ValMap& env, const IRQuad& q) {
         if (!q.result.empty()) killVar(env, q.result);
         return;
     }
-    if (isPureComputeOp(q.op) || q.op == "[]"
+    if (isPureComputeQuad(q) || q.op == "[]"
         || q.op == "." || q.op == "->" || q.op == "&"
         || q.op == "&." || q.op == "&->" || q.op == "&[]") {
         if (!q.result.empty()) killVar(env, q.result);
@@ -198,8 +198,8 @@ std::unordered_set<std::string> defsInRange(const std::vector<IRQuad>& code,
     for (size_t i = start; i <= end && i < code.size(); ++i) {
         const IRQuad& q = code[i];
         if (q.op == "label") continue;
-            if (!q.result.empty()
-                && (q.op == "=" || q.op == "str" || isPureComputeOp(q.op)
+            if (!q.result.empty() && !irIsCondJump(q)
+                && (q.op == "=" || q.op == "str" || isPureComputeQuad(q)
                 || q.op == "[]" || q.op == "." || q.op == "->"
                 || q.op == "call" || q.op == "&" || q.op == "&."
                 || q.op == "&->" || q.op == "&[]")) {
@@ -220,7 +220,7 @@ bool operandInvariant(const std::string& opnd,
 bool quadIsHoistableInvariant(const IRQuad& q,
                               const std::unordered_set<std::string>& loopDefs,
                               const std::unordered_set<std::string>& hoistedTemps) {
-    if (!isPureComputeOp(q.op)) return false;
+    if (!isPureComputeQuad(q)) return false;
     if (q.result.empty() || !irIsTemp(q.result)) return false;
     return operandInvariant(q.arg1, loopDefs, hoistedTemps)
         && operandInvariant(q.arg2, loopDefs, hoistedTemps);
@@ -295,7 +295,7 @@ bool IROptimizer::constantPropagationAndFolding(std::vector<IRQuad>& code,
                 continue;
             }
 
-            if (isPureComputeOp(q.op)) {
+            if (isPureComputeQuad(q)) {
                 std::string folded;
                 if (q.arg2.empty()) {
                     if (evalUnary(q.op, q.arg1, folded)) {
@@ -348,7 +348,7 @@ bool IROptimizer::commonSubexpressionElimination(std::vector<IRQuad>& code,
             q.arg1 = resolveRepl(q.arg1, repl);
             q.arg2 = resolveRepl(q.arg2, repl);
 
-            if (isPureComputeOp(q.op) && irIsTemp(q.result)) {
+            if (isPureComputeQuad(q) && irIsTemp(q.result)) {
                 std::string key = exprKey(q);
                 auto it = expr2res.find(key);
                 if (it != expr2res.end()) {
@@ -400,7 +400,7 @@ bool IROptimizer::deadCodeElimination(std::vector<IRQuad>& code,
             collectUses(q, live);
             continue;
         }
-        if (isPureComputeOp(q.op)) {
+        if (isPureComputeQuad(q)) {
             if (!q.result.empty() && live.count(q.result)) {
                 keep[i] = true;
                 collectUses(q, live);

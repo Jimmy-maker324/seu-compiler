@@ -9,11 +9,9 @@
  *   每个运算结果存入新临时变量 t0,t1,...
  *
  * 【控制流翻译】
- *   if (E) S1 [else S2]:
- *     计算 E 到 cond；emit(if, cond, "0", goto Lelse)
- *     翻译 S1；emit(goto, "", "", Lend)；label Lelse；[S2]；label Lend
- *   while (E) S:
- *     Lstart: 计算 E；条件假 goto Lend；S；goto Lstart；Lend:
+ *   比较条件跳转：emit(relop, a, b, L)（relop 成立则转到 L，不生成临时变量）
+ *   其它条件：emit(goto, cond, "0", L)（cond==0 则转到 L）
+ *   无条件跳转：emit(goto, "", "", L)
  *
  * 【赋值】标识符直接 emit(=, rhs, "", lhs)；数组 emit([]=, arr, idx, rhs)
  *
@@ -83,12 +81,22 @@ void IRGenerator::emit(const std::string& op, const std::string& a1,
     code.push_back({op, a1, a2, r});
 }
 
-/** @brief 从跳转四元式中提取目标标签名 */
-static std::string jumpTarget(const std::string& op, const std::string& result) {
-    if (op == "goto") return result;
-    if (op == "if" && result.size() > 5 && result.compare(0, 5, "goto ") == 0)
-        return result.substr(5);
+/** @brief 从 goto / 比较条件跳转四元式中提取目标标签名 */
+static std::string jumpTarget(const IRQuad& q) {
+    if (q.op == "goto" && !q.result.empty())
+        return q.result;
+    if (irIsCondJump(q))
+        return q.result;
     return "";
+}
+
+/** @brief 标签名 → 目标四元式行号（字符串）；未知则原样返回 */
+static std::string jumpLineOf(const std::string& label,
+                              const std::unordered_map<std::string, size_t>& labelLine) {
+    auto it = labelLine.find(label);
+    if (it != labelLine.end())
+        return std::to_string(it->second);
+    return label;
 }
 
 /** @brief 将四元式序列按序号写入文件，标签前缀在该基本块首条四元式行 */
@@ -127,40 +135,26 @@ void IRGenerator::dump() {
         }
 
         out << i << ": ";
-        if (!pendingLabel.empty()) {
-            out << pendingLabel << ": ";
-            pendingLabel.clear();
-        }
-        out << "(" << q.op << ", " << q.arg1 << ", " << q.arg2 << ", " << q.result << ")";
+        out << "(" << q.op << ", " << q.arg1 << ", " << q.arg2 << ", ";
 
-        std::string target = jumpTarget(q.op, q.result);
-        if (!target.empty()) {
+        std::string target = jumpTarget(q);
+        if (!target.empty())
+            out << jumpLineOf(target, labelLine);
+        else
+            out << q.result;
+        out << ")";
+
+        if (!pendingLabel.empty()) {
+            auto it = labelDesc.find(pendingLabel);
+            if (it != labelDesc.end())
+                out << "    ; " << it->second;
+            pendingLabel.clear();
+        } else if (!target.empty()) {
             auto it = labelDesc.find(target);
-            auto lt = labelLine.find(target);
-            if (it != labelDesc.end()) {
-                out << "    ; → " << target;
-                if (lt != labelLine.end())
-                    out << " @ 第 " << lt->second << " 行";
-                out << " (" << it->second << ")";
-            }
+            if (it != labelDesc.end())
+                out << "    ; " << it->second;
         }
         out << "\n";
-    }
-
-    if (!labelDesc.empty()) {
-        out << "\n========== 标签所在行 ==========\n";
-        for (int n = 0; n < labelCounter; ++n) {
-            std::string key = "L" + std::to_string(n);
-            auto it = labelDesc.find(key);
-            auto lt = labelLine.find(key);
-            if (it == labelDesc.end()) continue;
-            out << key << " → 第 ";
-            if (lt != labelLine.end())
-                out << lt->second;
-            else
-                out << "?";
-            out << " 行    ; " << it->second << "\n";
-        }
     }
     std::cout << "IR dumped to " << outFile << std::endl;
 }
@@ -199,26 +193,66 @@ std::string IRGenerator::visit(ASTNode* node) {
     }
 }
 
+/** @brief 二元比较运算符 → IR 操作符 */
+std::string IRGenerator::relOpFromBinary(int tokenOp) {
+    switch (tokenOp) {
+        case '<': return "<";
+        case T_LE_OP: return "<=";
+        case '>': return ">";
+        case T_GE_OP: return ">=";
+        case T_EQ_OP: return "==";
+        case T_NE_OP: return "!=";
+        default: return "";
+    }
+}
+
+/** @brief 比较跳转用的互补运算符（原条件为假 ⟺ 互补条件为真） */
+static std::string invertRelOp(const std::string& op) {
+    if (op == "<") return ">=";
+    if (op == "<=") return ">";
+    if (op == ">") return "<=";
+    if (op == ">=") return "<";
+    if (op == "==") return "!=";
+    if (op == "!=") return "==";
+    return op;
+}
+
+/** @brief 条件为假时跳转；比较表达式 emit(互补relop, a, b, L) 使四元式语义直观 */
+void IRGenerator::emitCondJump(ASTNode* cond, const std::string& falseLabel) {
+    if (!cond) {
+        emit("goto", "", "", falseLabel);
+        return;
+    }
+    if (cond->kind == NodeKind::BinaryOp) {
+        auto* bin = static_cast<BinaryOpNode*>(cond);
+        std::string op = relOpFromBinary(bin->op);
+        if (!op.empty()) {
+            std::string left = visit(bin->left.get());
+            std::string right = visit(bin->right.get());
+            emit(invertRelOp(op), left, right, falseLabel);
+            return;
+        }
+    }
+    std::string val = visit(cond);
+    emit("goto", val, "0", falseLabel);
+}
+
 /** @brief 先递归求值左右操作数，再 emit 运算四元式 */
 std::string IRGenerator::visitBinaryOp(BinaryOpNode* bin) {
     std::string left = visit(bin->left.get());
     std::string right = visit(bin->right.get());
     std::string tmp = newTemp();
-    std::string op;
-    switch (bin->op) {
-        case '+': op = "+"; break;
-        case '-': op = "-"; break;
-        case '*': op = "*"; break;
-        case '/': op = "/"; break;
-        case '<': op = "<"; break;
-        case T_LE_OP: op = "<="; break;
-        case '>': op = ">"; break;
-        case T_GE_OP: op = ">="; break;
-        case T_EQ_OP: op = "=="; break;
-        case T_NE_OP: op = "!="; break;
-        case T_AND_OP: op = "&&"; break;
-        case T_OR_OP: op = "||"; break;
-        default: op = "?";
+    std::string op = relOpFromBinary(bin->op);
+    if (op.empty()) {
+        switch (bin->op) {
+            case '+': op = "+"; break;
+            case '-': op = "-"; break;
+            case '*': op = "*"; break;
+            case '/': op = "/"; break;
+            case T_AND_OP: op = "&&"; break;
+            case T_OR_OP: op = "||"; break;
+            default: op = "?"; break;
+        }
     }
     emit(op, left, right, tmp);
     return tmp;
@@ -379,10 +413,9 @@ void IRGenerator::visitStmt(ASTNode* stmt) {
         }
         case NodeKind::IfStmt: {
             auto* ifNode = (MultiNode*)stmt;
-            std::string cond = visit(ifNode->children[0].get());
             std::string labelElse = newLabel();
             std::string labelEnd = newLabel();
-            emit("if", cond, "0", "goto " + labelElse);
+            emitCondJump(ifNode->children[0].get(), labelElse);
             if (ifNode->children.size() >= 2) visitStmt(ifNode->children[1].get());
             emit("goto", "", "", labelEnd);
             emitLabel(labelElse, labelContext("if else 分支"));
@@ -395,8 +428,7 @@ void IRGenerator::visitStmt(ASTNode* stmt) {
             std::string labelStart = newLabel();
             std::string labelEnd = newLabel();
             emitLabel(labelStart, labelContext("while 循环入口"));
-            std::string cond = visit(whileNode->children[0].get());
-            emit("if", cond, "0", "goto " + labelEnd);
+            emitCondJump(whileNode->children[0].get(), labelEnd);
             breakTargetStack.push_back(labelEnd);
             continueTargetStack.push_back(labelStart);
             if (whileNode->children.size() >= 2) visitStmt(whileNode->children[1].get());
@@ -414,10 +446,8 @@ void IRGenerator::visitStmt(ASTNode* stmt) {
             if (forNode->children.size() >= 1 && forNode->children[0])
                 visitStmt(forNode->children[0].get());
             emitLabel(labelStart, labelContext("for 循环条件"));
-            if (forNode->children.size() >= 2 && forNode->children[1]) {
-                std::string cond = visit(forNode->children[1].get());
-                emit("if", cond, "0", "goto " + labelEnd);
-            }
+            if (forNode->children.size() >= 2 && forNode->children[1])
+                emitCondJump(forNode->children[1].get(), labelEnd);
             breakTargetStack.push_back(labelEnd);
             continueTargetStack.push_back(labelContinue);
             if (forNode->children.size() >= 4 && forNode->children[3])
@@ -465,9 +495,7 @@ void IRGenerator::visitStmt(ASTNode* stmt) {
             for (const ClauseInfo& info : clauses) {
                 if (info.isDefault) continue;
                 std::string nextTest = newLabel();
-                std::string eq = newTemp();
-                emit("==", swVal, std::to_string(info.value), eq);
-                emit("if", eq, "0", "goto " + nextTest);
+                emit("!=", swVal, std::to_string(info.value), nextTest);
                 emit("goto", "", "", info.bodyLabel);
                 emitLabel(nextTest, labelContext("switch 下一分支测试"));
             }
