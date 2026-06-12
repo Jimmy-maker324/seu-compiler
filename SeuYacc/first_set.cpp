@@ -38,14 +38,6 @@
 
 #define EPSILON -1   /* ε 在 First 集中的占位 ID，非真实终结符 */
 
-namespace {
-    /** 判断符号 First 集是否含 ε */
-    bool has_epsilon(int sym);
-
-    /** 调试：打印单个符号的 First 集 */
-    void print_first_set_of(int sym, const set<int>& fs);
-}
-
 /**
  * 计算文法中所有终结符与非终结符的 First 集
  * 终结符：First(t) = {t}；空产生式右部为空时加入 ε
@@ -147,28 +139,4 @@ set<int> compute_first_of_string(const vector<int>& syms) {
     }
     if (all_epsilon) result.insert(EPSILON);
     return result;
-}
-
-namespace {
-    bool has_epsilon(int sym) {
-        if (first_set.find(sym) == first_set.end()) {
-            return false;
-        }
-        return first_set[sym].count(EPSILON) > 0;
-    }
-
-    void print_first_set_of(int sym, const set<int>& fs) {
-        cout << "  First(" << symbol_name_map[sym] << ") = { ";
-        bool first = true;
-        for (int t : fs) {
-            if (!first) cout << ", ";
-            first = false;
-            if (t == EPSILON) {
-                cout << "ε";
-            } else {
-                cout << symbol_name_map[t];
-            }
-        }
-        cout << " }" << endl;
-    }
 }

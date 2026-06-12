@@ -181,6 +181,7 @@ void build_lr1_dfa() {
         DEBUG_PRINT("  Symbols to process (" << symbols.size() << "):");
         for (int sym : symbols) {
             DEBUG_PRINT("    " << symbol_name_map[sym] << " (" << sym << ")");
+            (void)sym;
         }
 
         for (int X : symbols) {

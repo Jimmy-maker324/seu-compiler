@@ -207,36 +207,35 @@ int report_lalr_merge_conflicts(const vector<ParseConflict>& pre_merge,
         return 0;
     }
 
-    cerr << "\n[LALR] Warning: parsing conflicts detected after state merge:\n";
+    for (const ParseConflict& c : post_merge) {
+        if (pre_sigs.find(conflict_signature(c)) == pre_sigs.end())
+            newly_exposed++;
+    }
+
+    DEBUG_PRINT("[LALR] parsing conflicts after state merge: " << post_merge.size()
+                << " total, " << newly_exposed << " newly exposed");
     for (const ParseConflict& c : post_merge) {
         bool is_new = pre_sigs.find(conflict_signature(c)) == pre_sigs.end();
-        if (is_new) newly_exposed++;
-
-        cerr << "  state I" << c.state << ", on " << terminal_name(c.terminal) << ": ";
+        ostringstream msg;
+        msg << "  state I" << c.state << ", on " << terminal_name(c.terminal) << ": ";
         switch (c.kind) {
             case ParseConflict::REDUCE_REDUCE:
-                cerr << "reduce-reduce between "
-                     << production_label(c.reduce_prod) << " and "
-                     << production_label(c.reduce_prod2);
+                msg << "reduce-reduce between "
+                    << production_label(c.reduce_prod) << " and "
+                    << production_label(c.reduce_prod2);
                 break;
             case ParseConflict::SHIFT_REDUCE:
-                cerr << "shift-reduce (shift -> I" << c.shift_state
-                     << ", reduce " << production_label(c.reduce_prod) << ")";
+                msg << "shift-reduce (shift -> I" << c.shift_state
+                    << ", reduce " << production_label(c.reduce_prod) << ")";
                 break;
             case ParseConflict::SHIFT_SHIFT:
-                cerr << "shift-shift (I" << c.shift_state << " vs I"
-                     << c.reduce_prod << ")";
+                msg << "shift-shift (I" << c.shift_state << " vs I"
+                    << c.reduce_prod << ")";
                 break;
         }
-        if (is_new) cerr << " [newly exposed by LALR merge]";
-        cerr << "\n";
+        if (is_new) msg << " [newly exposed by LALR merge]";
+        DEBUG_PRINT(msg.str());
     }
-
-    cerr << "[LALR] Total: " << post_merge.size() << " conflict(s)";
-    if (newly_exposed > 0) {
-        cerr << ", " << newly_exposed << " newly exposed (absent in LR(1) DFA)";
-    }
-    cerr << ". Must be resolved by grammar or %prec before code generation.\n\n";
 
     return newly_exposed;
 }

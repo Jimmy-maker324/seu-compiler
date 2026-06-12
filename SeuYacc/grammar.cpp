@@ -333,6 +333,7 @@ bool parse_yacc_file(const string& filename) {
         DEBUG_PRINT("Prod " << i << ": " << symbol_name_map[p.left] << " ->");
         for (int sym : p.right) {
             DEBUG_PRINT(" " << symbol_name_map[sym] << "(" << sym << (IS_TERMINAL(sym)?" T":" NT") << ")");
+            (void)sym;
         }
         if (p.right.empty()) DEBUG_PRINT(" ε");
     }

@@ -42,7 +42,6 @@ namespace {
     void generate_yyparse(ofstream& out);
     void generate_yyerror(ofstream& out);
     void generate_footer(ofstream& out);
-    string escape_string(const string& s);
 
     int action_type_code(ActionType type) {
         switch (type) {
@@ -334,11 +333,9 @@ namespace {
         out << "int yyparse(void) {\n";
         out << "    /* Stack definitions */\n";
         out << "    int state_stack[STACK_SIZE];\n";
-        out << "    int sym_stack[STACK_SIZE];\n";
         out << "    YYSTYPE val_stack[STACK_SIZE];\n";
         out << "    int sp = 0; // Stack pointer\n";
         out << "    int yyerrstatus = 0;   /* 0=正常, >0=错误恢复中（抑制重复报错） */\n";
-        out << "    int yyhad_error = 0;   /* 是否出现过语法错误 */\n";
         out << "    int token = 0;\n";
         out << "    int token_valid = 0;   /* 0 表示需读取新记号（yyclearin） */\n\n";
 
@@ -350,7 +347,6 @@ namespace {
         out << "        val_stack[_vi].ptr = nullptr;\n";
         out << "    }\n";
         out << "    state_stack[sp] = 0;\n";
-        out << "    sym_stack[sp] = 0;\n";
         out << "    sp++;\n\n";
 
         out << "    /* Main loop */\n";
@@ -377,7 +373,6 @@ namespace {
         out << "            case ACTION_SHIFT:\n";
         out << "                if (yyerrstatus > 0) yyerrstatus--;\n";
         out << "                state_stack[sp] = act_num;\n";
-        out << "                sym_stack[sp] = token;\n";
         out << "                val_stack[sp].ival = 0;\n";
         out << "                val_stack[sp].fval = 0.0;\n";
         out << "                val_stack[sp].sval = nullptr;\n";
@@ -442,7 +437,6 @@ namespace {
         out << "                    }\n\n";
         out << "                    /* Push new state and non-terminal */\n";
         out << "                    state_stack[sp] = next_state;\n";
-        out << "                    sym_stack[sp] = left_idx + " << NON_TERM_BASE << ";\n";
         out << "                    sp++;\n";
         out << "                }\n";
         out << "                break;\n\n";
@@ -454,7 +448,6 @@ namespace {
         out << "                /* Panic-mode：弹栈直至可移进 error，再局部恢复 */\n";
         out << "                if (yyerrstatus == 0) {\n";
         out << "                    yyerror(\"Syntax error\");\n";
-        out << "                    yyhad_error = 1;\n";
         out << "                }\n";
         out << "                yyerrstatus = 3;\n";
         out << "                {\n";
@@ -481,7 +474,6 @@ namespace {
         out << "                        int err_act_type = ACTION_ERROR, next_err = -1;\n";
         out << "                        lookup_action(err_state, T_ERROR, &err_act_type, &next_err);\n";
         out << "                        state_stack[sp] = next_err;\n";
-        out << "                        sym_stack[sp] = T_ERROR;\n";
         out << "                        val_stack[sp].ival = 0;\n";
         out << "                        val_stack[sp].sval = nullptr;\n";
         out << "                        val_stack[sp].ptr = nullptr;\n";
@@ -524,19 +516,5 @@ namespace {
             out << user_sub_code << "\n";
         }
         out << "\n";
-    }
-
-    string escape_string(const string& s) {
-        string res;
-        for (char c : s) {
-            switch (c) {
-                case '\\': res += "\\\\"; break;
-                case '\"': res += "\\\""; break;
-                case '\n': res += "\\n"; break;
-                case '\t': res += "\\t"; break;
-                default: res += c;
-            }
-        }
-        return res;
     }
 }

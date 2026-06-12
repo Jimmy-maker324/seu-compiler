@@ -9,8 +9,8 @@
  *   每个运算结果存入新临时变量 t0,t1,...
  *
  * 【控制流翻译】
- *   比较条件跳转：emit(relop, a, b, L)（relop 成立则转到 L，不生成临时变量）
- *   其它条件：emit(goto, cond, "0", L)（cond==0 则转到 L）
+ *   比较条件为真跳转：emit(relop, a, b, L)（relop 成立则转到 L）
+ *   为假则顺序执行下一行（如循环出口 goto）；其它条件 emit(!=, cond, 0, L)
  *   无条件跳转：emit(goto, "", "", L)
  *
  * 【赋值】标识符直接 emit(=, rhs, "", lhs)；数组 emit([]=, arr, idx, rhs)
@@ -206,21 +206,10 @@ std::string IRGenerator::relOpFromBinary(int tokenOp) {
     }
 }
 
-/** @brief 比较跳转用的互补运算符（原条件为假 ⟺ 互补条件为真） */
-static std::string invertRelOp(const std::string& op) {
-    if (op == "<") return ">=";
-    if (op == "<=") return ">";
-    if (op == ">") return "<=";
-    if (op == ">=") return "<";
-    if (op == "==") return "!=";
-    if (op == "!=") return "==";
-    return op;
-}
-
-/** @brief 条件为假时跳转；比较表达式 emit(互补relop, a, b, L) 使四元式语义直观 */
-void IRGenerator::emitCondJump(ASTNode* cond, const std::string& falseLabel) {
+/** @brief 条件为真时跳转；比较 emit(relop, a, b, L)，否则 emit(!=, val, 0, L) */
+void IRGenerator::emitTrueCondJump(ASTNode* cond, const std::string& trueLabel) {
     if (!cond) {
-        emit("goto", "", "", falseLabel);
+        emit("goto", "", "", trueLabel);
         return;
     }
     if (cond->kind == NodeKind::BinaryOp) {
@@ -229,12 +218,12 @@ void IRGenerator::emitCondJump(ASTNode* cond, const std::string& falseLabel) {
         if (!op.empty()) {
             std::string left = visit(bin->left.get());
             std::string right = visit(bin->right.get());
-            emit(invertRelOp(op), left, right, falseLabel);
+            emit(op, left, right, trueLabel);
             return;
         }
     }
     std::string val = visit(cond);
-    emit("goto", val, "0", falseLabel);
+    emit("!=", val, "0", trueLabel);
 }
 
 /** @brief 先递归求值左右操作数，再 emit 运算四元式 */
@@ -413,22 +402,31 @@ void IRGenerator::visitStmt(ASTNode* stmt) {
         }
         case NodeKind::IfStmt: {
             auto* ifNode = (MultiNode*)stmt;
+            std::string labelThen = newLabel();
             std::string labelElse = newLabel();
             std::string labelEnd = newLabel();
-            emitCondJump(ifNode->children[0].get(), labelElse);
+            bool hasElse = ifNode->children.size() >= 3;
+            emitTrueCondJump(ifNode->children[0].get(), labelThen);
+            emit("goto", "", "", hasElse ? labelElse : labelEnd);
+            emitLabel(labelThen, labelContext("if then 分支"));
             if (ifNode->children.size() >= 2) visitStmt(ifNode->children[1].get());
             emit("goto", "", "", labelEnd);
-            emitLabel(labelElse, labelContext("if else 分支"));
-            if (ifNode->children.size() >= 3) visitStmt(ifNode->children[2].get());
+            if (hasElse) {
+                emitLabel(labelElse, labelContext("if else 分支"));
+                visitStmt(ifNode->children[2].get());
+            }
             emitLabel(labelEnd, labelContext("if 结束"));
             break;
         }
         case NodeKind::WhileStmt: {
             auto* whileNode = (MultiNode*)stmt;
             std::string labelStart = newLabel();
+            std::string labelBody = newLabel();
             std::string labelEnd = newLabel();
-            emitLabel(labelStart, labelContext("while 循环入口"));
-            emitCondJump(whileNode->children[0].get(), labelEnd);
+            emitLabel(labelStart, labelContext("while 循环条件"));
+            emitTrueCondJump(whileNode->children[0].get(), labelBody);
+            emit("goto", "", "", labelEnd);
+            emitLabel(labelBody, labelContext("while 循环体"));
             breakTargetStack.push_back(labelEnd);
             continueTargetStack.push_back(labelStart);
             if (whileNode->children.size() >= 2) visitStmt(whileNode->children[1].get());
@@ -441,13 +439,18 @@ void IRGenerator::visitStmt(ASTNode* stmt) {
         case NodeKind::ForStmt: {
             auto* forNode = (MultiNode*)stmt;
             std::string labelStart = newLabel();
+            std::string labelBody = newLabel();
             std::string labelContinue = newLabel();
             std::string labelEnd = newLabel();
             if (forNode->children.size() >= 1 && forNode->children[0])
                 visitStmt(forNode->children[0].get());
             emitLabel(labelStart, labelContext("for 循环条件"));
-            if (forNode->children.size() >= 2 && forNode->children[1])
-                emitCondJump(forNode->children[1].get(), labelEnd);
+            bool hasCond = forNode->children.size() >= 2 && forNode->children[1];
+            if (hasCond) {
+                emitTrueCondJump(forNode->children[1].get(), labelBody);
+                emit("goto", "", "", labelEnd);
+                emitLabel(labelBody, labelContext("for 循环体"));
+            }
             breakTargetStack.push_back(labelEnd);
             continueTargetStack.push_back(labelContinue);
             if (forNode->children.size() >= 4 && forNode->children[3])
@@ -495,8 +498,8 @@ void IRGenerator::visitStmt(ASTNode* stmt) {
             for (const ClauseInfo& info : clauses) {
                 if (info.isDefault) continue;
                 std::string nextTest = newLabel();
-                emit("!=", swVal, std::to_string(info.value), nextTest);
-                emit("goto", "", "", info.bodyLabel);
+                emit("==", swVal, std::to_string(info.value), info.bodyLabel);
+                emit("goto", "", "", nextTest);
                 emitLabel(nextTest, labelContext("switch 下一分支测试"));
             }
             if (hasDefault) {

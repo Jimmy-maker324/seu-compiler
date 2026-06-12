@@ -80,8 +80,8 @@ private:
     std::string labelContext(const std::string& meaning) const;
     /** @brief 登记标签语义并输出 label 四元式 */
     void emitLabel(const std::string& label, const std::string& desc);
-    /** @brief 条件为假时跳转；比较 emit(互补relop, a, b, L)，四元式表示 relop 成立则跳转 */
-    void emitCondJump(ASTNode* cond, const std::string& falseLabel);
+    /** @brief 条件为真时跳转；比较 emit(relop, a, b, L)，非比较 emit(!=, val, 0, L) */
+    void emitTrueCondJump(ASTNode* cond, const std::string& trueLabel);
     /** @brief 二元比较运算符 → IR 操作符，非比较则返回空串 */
     static std::string relOpFromBinary(int tokenOp);
 };
