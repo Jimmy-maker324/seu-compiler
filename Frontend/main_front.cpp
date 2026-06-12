@@ -32,6 +32,7 @@
 #include "ast.h"
 #include "typecheck.h"
 #include "irgen.h"
+#include "compile_pipeline.h"
 #include "ir_opt.h"
 #include "ast_printer.h"
 #include "ast_dot.h"
@@ -239,11 +240,10 @@ int main(int argc, char** argv) {
         }
 
         printf("语义分析... ");
-        TypeChecker checker;
-        checker.check(astRoot, &detailOut);
-        if (checker.hasErrors()) {
+        IRGenerator irgen("output/output.ir");
+        if (!compileSemanticAndIR(astRoot, &detailOut, irgen)) {
             detailOut << "  语义失败：已跳过 IR；AST 文本与 ast.dot 仍保留于 output/\n\n";
-            printf("失败（%d 个类型错误），跳过 IR 生成\n", checker.errorCount());
+            printf("失败，跳过 IR 生成\n");
             detailOut.close();
             return 2;
         }
@@ -251,8 +251,6 @@ int main(int argc, char** argv) {
 
         detailOut.close();
 
-        IRGenerator irgen("output/output.ir");
-        irgen.generate(astRoot);
         irgen.dumpTo("output/output_raw.ir");
 
         if (noOpt) {
@@ -260,12 +258,11 @@ int main(int argc, char** argv) {
             printf("已跳过 IR 优化 (--no-opt)，output.ir 与 output_raw.ir 相同\n");
         } else {
             printf("代码优化... ");
-            IROptimizer opt;
-            IROptStats optStats = opt.run(irgen.getCode());
+            IROptStats optStats;
+            finalizeIR(irgen, false, &optStats);
             printf("常量折叠 %d, 传播 %d, CSE %d, 消除 %d, 外提 %d\n",
                    optStats.constFold, optStats.constProp, optStats.cseElim,
                    optStats.deadRemoved, optStats.hoisted);
-            irgen.dump();
         }
         printf("IR 已写入 output/output.ir\n");
 

@@ -120,7 +120,19 @@ gen_docs.bat
 | 2 | 编译并运行 `build\seuyacc.exe --lalr grammar\yacc.y generated/yyparse.cpp` | `generated/yyparse.cpp`（LALR 分析表 + 归约代码） |
 | 3 | 编译各前端模块并链接 | `build\compiler.exe` |
 
-`build.bat` 编译选项含 **`-Wall`**，便于开发期暴露未使用变量等问题。
+`build.bat` 编译选项含 **`-Wall`**，便于开发期暴露未使用变量等问题。  
+**增量编译**：仅当源文件比对应 `build\*.o` 新时才重新 `g++ -c`；`compiler.exe` 仅在任一 `.o` 更新后重新链接。
+
+**CMake（可选）**：
+
+```bat
+cmake -S . -B build-cmake
+cmake --build build-cmake
+```
+
+产物为 `build-cmake/compiler.exe`（需本机已安装 CMake 与 MinGW g++）。
+
+**编译管线**：`Frontend/compile_pipeline.cpp` 统一调用 `TypeChecker::check` 与 `IRGenerator::generate`（语义通过后才生成 IR）。
 
 修改 **`grammar/lex.l`** 或 **`grammar/yacc.y`** 后，须重新运行 `build.bat`（会重新生成分析器并链接）。
 
@@ -439,7 +451,8 @@ build\seuyacc.exe --lalr --print-dfa grammar\yacc.y generated/yyparse.cpp
 ```
 seu-compiler/
 ├── README.md              # 本说明
-├── build.bat              # 一键构建
+├── build.bat              # 一键构建（支持增量 .o / 链接）
+├── CMakeLists.txt         # 可选 CMake 构建
 ├── test.bat               # 回归测试（校验 examples 退出码）
 ├── gen_docs.bat           # Doxygen 生成文档
 │
@@ -477,6 +490,7 @@ seu-compiler/
 ├── SeuYacc/               # 语法生成器
 ├── Frontend/              # 编译器前端
 │   ├── main_front.cpp     # 驱动词法/语法/语义/IR
+│   ├── compile_pipeline.* # 语义+IR 统一入口与 finalizeIR
 │   ├── ast_format.*       # AST 共享格式化（文本树 / DOT 共用）
 │   ├── ast_printer.*      # AST 文本树
 │   ├── ast_dot.*          # AST Graphviz 导出
