@@ -44,6 +44,8 @@ private:
     bool skipCompoundScope_ = false;
     /** @brief 当前函数返回类型；nullptr 表示不在函数体内 */
     Type* currentReturnType_ = nullptr;
+    /** @brief 控制流语句内部子节点已由 emitIrStmt(父) 统一生成 IR，跳过子节点单独 emit */
+    int irControlDepth_ = 0;
 
     void enterScopeLogged();
     void leaveScopeLogged();

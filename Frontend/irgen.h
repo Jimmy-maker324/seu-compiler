@@ -92,8 +92,9 @@ private:
     std::string labelContext(const std::string& meaning) const;
     /** @brief 登记标签语义并输出 label 四元式 */
     void emitLabel(const std::string& label, const std::string& desc);
-    /** @brief 条件为真时跳转；比较 emit(relop, a, b, L)，非比较 emit(!=, val, 0, L) */
-    void emitTrueCondJump(ASTNode* cond, const std::string& trueLabel);
+    /** @brief 条件为真跳 trueLabel；为假且 falseLabel 非空则 goto falseLabel，否则顺序执行下一行 */
+    void emitTrueCondJump(ASTNode* cond, const std::string& trueLabel,
+                          const std::string& falseLabel = "");
     /** @brief 二元比较运算符 → IR 操作符，非比较则返回空串 */
     static std::string relOpFromBinary(int tokenOp);
 };

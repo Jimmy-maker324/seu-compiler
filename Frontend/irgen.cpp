@@ -220,24 +220,41 @@ std::string IRGenerator::relOpFromBinary(int tokenOp) {
     }
 }
 
-/** @brief 条件为真时跳转；比较 emit(relop, a, b, L)，否则 emit(!=, val, 0, L) */
-void IRGenerator::emitTrueCondJump(ASTNode* cond, const std::string& trueLabel) {
+/** @brief 条件为真时跳转；&&/|| 短路链式判断，不用临时变量 */
+void IRGenerator::emitTrueCondJump(ASTNode* cond, const std::string& trueLabel,
+                                   const std::string& falseLabel) {
     if (!cond) {
         emit("goto", "", "", trueLabel);
         return;
     }
     if (cond->kind == NodeKind::BinaryOp) {
         auto* bin = static_cast<BinaryOpNode*>(cond);
+        if (bin->op == T_AND_OP) {
+            std::string nextCheck = newLabel();
+            emitTrueCondJump(bin->left.get(), nextCheck, falseLabel);
+            emitLabel(nextCheck, labelContext("下一条件"));
+            emitTrueCondJump(bin->right.get(), trueLabel, falseLabel);
+            return;
+        }
+        if (bin->op == T_OR_OP) {
+            emitTrueCondJump(bin->left.get(), trueLabel, "");
+            emitTrueCondJump(bin->right.get(), trueLabel, falseLabel);
+            return;
+        }
         std::string op = relOpFromBinary(bin->op);
         if (!op.empty()) {
             std::string left = visit(bin->left.get());
             std::string right = visit(bin->right.get());
             emit(op, left, right, trueLabel);
+            if (!falseLabel.empty())
+                emit("goto", "", "", falseLabel);
             return;
         }
     }
     std::string val = visit(cond);
     emit("!=", val, "0", trueLabel);
+    if (!falseLabel.empty())
+        emit("goto", "", "", falseLabel);
 }
 
 /** @brief 先递归求值左右操作数，再 emit 运算四元式 */
@@ -429,8 +446,8 @@ void IRGenerator::visitStmt(ASTNode* stmt) {
             std::string labelElse = newLabel();
             std::string labelEnd = newLabel();
             bool hasElse = ifNode->children.size() >= 3;
-            emitTrueCondJump(ifNode->children[0].get(), labelThen);
-            emit("goto", "", "", hasElse ? labelElse : labelEnd);
+            emitTrueCondJump(ifNode->children[0].get(), labelThen,
+                             hasElse ? labelElse : labelEnd);
             emitLabel(labelThen, labelContext("if then 分支"));
             if (ifNode->children.size() >= 2) visitStmt(ifNode->children[1].get());
             emit("goto", "", "", labelEnd);
@@ -447,8 +464,7 @@ void IRGenerator::visitStmt(ASTNode* stmt) {
             std::string labelBody = newLabel();
             std::string labelEnd = newLabel();
             emitLabel(labelStart, labelContext("while 循环条件"));
-            emitTrueCondJump(whileNode->children[0].get(), labelBody);
-            emit("goto", "", "", labelEnd);
+            emitTrueCondJump(whileNode->children[0].get(), labelBody, labelEnd);
             emitLabel(labelBody, labelContext("while 循环体"));
             breakTargetStack.push_back(labelEnd);
             continueTargetStack.push_back(labelStart);
@@ -470,8 +486,7 @@ void IRGenerator::visitStmt(ASTNode* stmt) {
             emitLabel(labelStart, labelContext("for 循环条件"));
             bool hasCond = forNode->children.size() >= 2 && forNode->children[1];
             if (hasCond) {
-                emitTrueCondJump(forNode->children[1].get(), labelBody);
-                emit("goto", "", "", labelEnd);
+                emitTrueCondJump(forNode->children[1].get(), labelBody, labelEnd);
                 emitLabel(labelBody, labelContext("for 循环体"));
             }
             breakTargetStack.push_back(labelEnd);

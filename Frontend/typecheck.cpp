@@ -222,6 +222,7 @@ void TypeChecker::check(ASTNode* root, std::ostream* report) {
     switchDepth_ = 0;
     skipCompoundScope_ = false;
     currentReturnType_ = nullptr;
+    irControlDepth_ = 0;
 
     resetSymbolTable();
 
@@ -253,7 +254,7 @@ void TypeChecker::check(ASTNode* root, std::ostream* report, IRGenerator& ir) {
 }
 
 void TypeChecker::emitIrStmt(ASTNode* stmt) {
-    if (!irSink_ || !stmt) return;
+    if (!irSink_ || !stmt || irControlDepth_ > 0) return;
     switch (stmt->kind) {
         case NodeKind::CompoundStmt:
         case NodeKind::StructDef:
@@ -602,10 +603,12 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
             auto* ifNode = (MultiNode*)stmt;
             if (ifNode->children.size() >= 1)
                 checkCondition(ifNode->children[0].get(), ifNode->line);
+            ++irControlDepth_;
             if (ifNode->children.size() >= 2)
                 visitStmt(ifNode->children[1].get());
             if (ifNode->children.size() >= 3)
                 visitStmt(ifNode->children[2].get());
+            --irControlDepth_;
             break;
         }
         case NodeKind::WhileStmt: {
@@ -613,13 +616,16 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
             if (whileNode->children.size() >= 1)
                 checkCondition(whileNode->children[0].get(), whileNode->line);
             ++loopDepth_;
+            ++irControlDepth_;
             if (whileNode->children.size() >= 2)
                 visitStmt(whileNode->children[1].get());
+            --irControlDepth_;
             --loopDepth_;
             break;
         }
         case NodeKind::ForStmt: {
             auto* forNode = static_cast<MultiNode*>(stmt);
+            ++irControlDepth_;
             if (forNode->children.size() >= 1 && forNode->children[0])
                 visitStmt(forNode->children[0].get());
             ++loopDepth_;
@@ -630,6 +636,7 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
             if (forNode->children.size() >= 4 && forNode->children[3])
                 visitStmt(forNode->children[3].get());
             --loopDepth_;
+            --irControlDepth_;
             break;
         }
         case NodeKind::SwitchStmt: {
@@ -649,9 +656,11 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
                     }
                 }
             }
+            ++irControlDepth_;
             astwalk::walkSwitchClauseStmts(sw, [this](ASTNode* clauseStmt) {
                 visitStmt(clauseStmt);
             });
+            --irControlDepth_;
             --switchDepth_;
             break;
         }
