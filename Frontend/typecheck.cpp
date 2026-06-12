@@ -27,6 +27,7 @@
 #include "symbol.h"
 #include "type.h"
 #include "ast_walk.h"
+#include "irgen.h"
 #include "common_defs.h"
 #include <iostream>
 #include <iomanip>
@@ -230,7 +231,8 @@ void TypeChecker::check(ASTNode* root, std::ostream* report) {
     }
 
     if (report_) {
-        typeLog_ << "  开始语义分析（单遍遍历 AST）\n";
+        typeLog_ << (irSink_ ? "  开始单遍语义分析与 IR 生成\n"
+                              : "  开始语义分析（单遍遍历 AST）\n");
     }
 
     auto* prog = static_cast<MultiNode*>(root);
@@ -240,6 +242,31 @@ void TypeChecker::check(ASTNode* root, std::ostream* report) {
     }
     leaveScopeLogged();
     flushReport();
+}
+
+void TypeChecker::check(ASTNode* root, std::ostream* report, IRGenerator& ir) {
+    ir.beginCombinedPass();
+    irSink_ = &ir;
+    check(root, report);
+    irSink_ = nullptr;
+    ir.endCombinedPass();
+}
+
+void TypeChecker::emitIrStmt(ASTNode* stmt) {
+    if (!irSink_ || !stmt) return;
+    switch (stmt->kind) {
+        case NodeKind::CompoundStmt:
+        case NodeKind::StructDef:
+        case NodeKind::UnionDef:
+        case NodeKind::FuncDef:
+        case NodeKind::StmtList:
+        case NodeKind::ArgList:
+        case NodeKind::ParamList:
+            return;
+        default:
+            irSink_->visitStmt(stmt);
+            break;
+    }
 }
 
 /** @brief 表达式访问分发：根据节点种类调用对应 visit 例程 */
@@ -676,6 +703,11 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
                 Type* ptype = resolveVarType(tn->type, pid->line);
                 addSymbolLogged(pid->name, ptype, false, pid->line);
             });
+            std::string savedIrFunc;
+            if (irSink_) {
+                savedIrFunc = irSink_->currentFuncName();
+                irSink_->emitFunctionHead(layout);
+            }
             if (layout.body) {
                 skipCompoundScope_ = true;
                 visitStmt(layout.body);
@@ -686,6 +718,8 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
                 }
             }
             leaveScopeLogged();
+            if (irSink_)
+                irSink_->emitFunctionTail(savedIrFunc);
             currentReturnType_ = savedReturnType;
             break;
         }
@@ -697,6 +731,7 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
         default:
             break;
     }
+    emitIrStmt(stmt);
 }
 
 /** @brief 向 stderr 与详情报告输出带行号的类型错误信息 */

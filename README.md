@@ -132,7 +132,7 @@ cmake --build build-cmake
 
 产物为 `build-cmake/compiler.exe`（需本机已安装 CMake 与 MinGW g++）。
 
-**编译管线**：`Frontend/compile_pipeline.cpp` 统一调用 `TypeChecker::check` 与 `IRGenerator::generate`（语义通过后才生成 IR）。
+**编译管线**：`Frontend/compile_pipeline.cpp` 单遍调用 `TypeChecker::check(..., IRGenerator&)`——语义检查每条语句后立即生成 IR（不再第二遍 `generate`）。
 
 修改 **`grammar/lex.l`** 或 **`grammar/yacc.y`** 后，须重新运行 `build.bat`（会重新生成分析器并链接）。
 

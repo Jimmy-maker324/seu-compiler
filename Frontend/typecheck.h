@@ -16,6 +16,8 @@
 #include <sstream>
 #include <string>
 
+class IRGenerator;
+
 /**
  * @class TypeChecker
  * @brief AST 访问者，执行静态类型检查并报告语义错误
@@ -24,10 +26,13 @@ class TypeChecker {
 public:
     /** @brief 对 Program 根节点启动类型检查；report 非空时写入符号表与类型检查详情 */
     void check(ASTNode* root, std::ostream* report = nullptr);
+    /** @brief 单遍语义 + IR：类型检查通过后由 ir 同步生成四元式 */
+    void check(ASTNode* root, std::ostream* report, IRGenerator& ir);
     /** @brief 类型错误个数（check 之后有效） */
     int errorCount() const { return errorCount_; }
     bool hasErrors() const { return errorCount_ > 0; }
 private:
+    IRGenerator* irSink_ = nullptr;
     std::ostream* report_ = nullptr;
     std::ostringstream symbolLog_;
     std::ostringstream typeLog_;
@@ -77,6 +82,8 @@ private:
     /** @brief 输出类型错误到 stderr 与详情报告 */
     void error(const std::string& msg, int line);
     void flushReport();
+    /** @brief 单遍模式下对单条语句生成 IR（CompoundStmt/FuncDef 等由专用路径处理） */
+    void emitIrStmt(ASTNode* stmt);
 };
 
 #endif

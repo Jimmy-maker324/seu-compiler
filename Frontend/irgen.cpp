@@ -55,6 +55,19 @@ std::string irQuoteString(const std::string& s) {
 IRGenerator::IRGenerator(const std::string& outFile)
     : outFile(outFile), tempCounter(0), labelCounter(0), stringCounter_(0) {}
 
+void IRGenerator::beginCombinedPass() {
+    code.clear();
+    tempCounter = 0;
+    labelCounter = 0;
+    stringCounter_ = 0;
+    skipCompoundScope_ = false;
+    currentFunc.clear();
+    breakTargetStack.clear();
+    continueTargetStack.clear();
+    labelDesc.clear();
+    combinedPass_ = true;
+}
+
 /** @brief 生成唯一临时变量名 t0, t1, t2, ... */
 std::string IRGenerator::newTemp() {
     return "t" + std::to_string(tempCounter++);
@@ -365,6 +378,20 @@ std::string IRGenerator::visitCall(CallNode* call) {
     return tmp;
 }
 
+void IRGenerator::emitFunctionHead(const astwalk::FuncDefLayout& layout) {
+    currentFunc = layout.id->name;
+    code.push_back({"func", layout.id->name, "", ""});
+    astwalk::walkParams(layout.paramList, [&](TypeNode*, IdentifierNode* pid) {
+        Symbol* sym = getSymbol(pid->name);
+        if (sym)
+            emit("param", "", "", sym->irName);
+    });
+}
+
+void IRGenerator::emitFunctionTail(const std::string& savedFunc) {
+    currentFunc = savedFunc;
+}
+
 /** @brief 语句访问：复合块、表达式语句、if/while、return、函数定义 */
 void IRGenerator::visitStmt(ASTNode* stmt) {
     if (!stmt) return;
@@ -387,7 +414,9 @@ void IRGenerator::visitStmt(ASTNode* stmt) {
             astwalk::VarDeclLayout layout;
             if (!astwalk::parseVarDeclLayout(static_cast<MultiNode*>(stmt), layout))
                 break;
-            Symbol* sym = addSymbol(layout.id->name, resolveDeclaredType(layout.typeNode->type), false);
+            Symbol* sym = combinedPass_ ? getSymbol(layout.id->name) : nullptr;
+            if (!sym)
+                sym = addSymbol(layout.id->name, resolveDeclaredType(layout.typeNode->type), false);
             if (layout.init) {
                 std::string val = visit(layout.init);
                 emit("=", val, "", sym->irName);
@@ -534,6 +563,8 @@ void IRGenerator::visitStmt(ASTNode* stmt) {
             break;
         }
         case NodeKind::FuncDef: {
+            if (combinedPass_)
+                break;
             astwalk::FuncDefLayout layout;
             if (!astwalk::parseFuncDefLayout(static_cast<MultiNode*>(stmt), layout))
                 break;

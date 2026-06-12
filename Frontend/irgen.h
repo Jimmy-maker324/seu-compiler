@@ -12,6 +12,7 @@
 #define IRGEN_H
 
 #include "ast.h"
+#include "ast_walk.h"
 #include "ir.h"
 #include <string>
 #include <unordered_map>
@@ -25,8 +26,20 @@ class IRGenerator {
 public:
     /** @brief 指定 IR 输出文件路径 */
     IRGenerator(const std::string& outFile);
-    /** @brief 从 Program 根节点生成 IR */
+    /** @brief 从 Program 根节点生成 IR（独立第二遍，测试/兼容用） */
     void generate(ASTNode* root);
+    /** @brief 单遍模式：符号已由 TypeChecker 注册，只补 IR */
+    void setCombinedPass(bool enabled) { combinedPass_ = enabled; }
+    /** @brief 单遍开始前清空 IR 状态 */
+    void beginCombinedPass();
+    void endCombinedPass() { combinedPass_ = false; }
+    /** @brief 单遍模式下函数体检查完成后生成 func/param 四元式 */
+    void emitFunctionHead(const astwalk::FuncDefLayout& layout);
+    void emitFunctionTail(const std::string& savedFunc);
+    /** @brief 当前 IR 生成上下文中的函数名（单遍模式保存/恢复用） */
+    std::string currentFuncName() const { return currentFunc; }
+    /** @brief 访问语句节点（TypeChecker 单遍驱动时调用） */
+    void visitStmt(ASTNode* stmt);
     /** @brief 将四元式序列写入文件 */
     void dump();
     /** @brief 写入指定路径（用于保存优化前 IR） */
@@ -57,8 +70,6 @@ private:
     std::string visitString(StringNode* str);
     /** @brief 生成函数调用四元式 */
     std::string visitCall(CallNode* call);
-    /** @brief 访问语句节点 */
-    void visitStmt(ASTNode* stmt);
     int tempCounter;   ///< 临时变量编号计数器
     int labelCounter;  ///< 标签编号计数器（与 temp 分离）
     std::string currentFunc;  ///< 当前正在生成 IR 的函数名（用于标签说明）
@@ -69,6 +80,7 @@ private:
     std::vector<std::string> breakTargetStack;     ///< break 目标（循环/ switch 出口）
     std::vector<std::string> continueTargetStack;  ///< continue 目标（仅循环）
 
+    bool combinedPass_ = false;      ///< true：符号表由 TypeChecker 维护
     bool skipCompoundScope_ = false; ///< 函数体最外层块不再嵌套开 scope
     int stringCounter_ = 0;          ///< 字符串常量 strN 编号
 
