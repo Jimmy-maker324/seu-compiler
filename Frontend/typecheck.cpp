@@ -26,6 +26,7 @@
 #include "typecheck.h"
 #include "symbol.h"
 #include "type.h"
+#include "ast_walk.h"
 #include "common_defs.h"
 #include <iostream>
 #include <iomanip>
@@ -493,33 +494,25 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
     switch (stmt->kind) {
         case NodeKind::CompoundStmt: {
             auto* block = static_cast<MultiNode*>(stmt);
-            if (skipCompoundScope_) {
-                skipCompoundScope_ = false;
-                for (auto& child : block->children)
-                    visitStmt(child.get());
-            } else {
-                enterScopeLogged();
-                for (auto& child : block->children)
-                    visitStmt(child.get());
-                leaveScopeLogged();
-            }
+            astwalk::walkCompound(
+                block, skipCompoundScope_,
+                [this]() { enterScopeLogged(); },
+                [this]() { leaveScopeLogged(); },
+                [this](ASTNode* child) { visitStmt(child); });
             break;
         }
         case NodeKind::VarDecl: {
-            auto* decl = (MultiNode*)stmt;
-            // 子节点约定：[0]=TypeNode, [1]=IdentifierNode, [2]=初值表达式（可选）
-            if (decl->children.size() >= 2) {
-                auto* tn = (TypeNode*)decl->children[0].get();
-                auto* id = (IdentifierNode*)decl->children[1].get();
-                Type* varType = resolveVarType(tn->type, decl->line);
-                addSymbolLogged(id->name, varType, false, id->line);
-                if (decl->children.size() >= 3) {
-                    Type* init = visit(decl->children[2].get());
-                    if (!assignCompatible(varType, init)) {
-                        error("initializer type mismatch: cannot convert "
-                              + init->toString() + " to " + varType->toString(),
-                              decl->line);
-                    }
+            astwalk::VarDeclLayout layout;
+            if (!astwalk::parseVarDeclLayout(static_cast<MultiNode*>(stmt), layout))
+                break;
+            Type* varType = resolveVarType(layout.typeNode->type, stmt->line);
+            addSymbolLogged(layout.id->name, varType, false, layout.id->line);
+            if (layout.init) {
+                Type* init = visit(layout.init);
+                if (!assignCompatible(varType, init)) {
+                    error("initializer type mismatch: cannot convert "
+                          + init->toString() + " to " + varType->toString(),
+                          stmt->line);
                 }
             }
             break;
@@ -628,10 +621,10 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
                         error("duplicate case value: " + std::to_string(val), clause->line);
                     }
                 }
-                size_t start = (clause->kind == NodeKind::CaseStmt) ? 1 : 0;
-                for (size_t j = start; j < clause->children.size(); ++j)
-                    visitStmt(clause->children[j].get());
             }
+            astwalk::walkSwitchClauseStmts(sw, [this](ASTNode* clauseStmt) {
+                visitStmt(clauseStmt);
+            });
             --switchDepth_;
             break;
         }
@@ -665,51 +658,31 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
             break;
         }
         case NodeKind::FuncDef: {
-            auto* func = static_cast<MultiNode*>(stmt);
-            if (func->children.size() < 3) break;
-            auto* retType = static_cast<TypeNode*>(func->children[0].get())->type;
-            auto* funcId = static_cast<IdentifierNode*>(func->children[1].get());
-            Type* fnRetType = resolveVarType(retType, funcId->line);
+            astwalk::FuncDefLayout layout;
+            if (!astwalk::parseFuncDefLayout(static_cast<MultiNode*>(stmt), layout))
+                break;
+            Type* fnRetType = resolveVarType(layout.retType->type, layout.id->line);
             auto* ft = new FunctionType(fnRetType);
-            size_t bodyIdx = 2;
-            // 若有 ParamList，则解析形参类型并注册函数符号
-            if (func->children[2]->kind == NodeKind::ParamList) {
-                auto* plist = static_cast<MultiNode*>(func->children[2].get());
-                for (auto& pch : plist->children) {
-                    auto* p = static_cast<MultiNode*>(pch.get());
-                    if (p->children.size() >= 2) {
-                        auto* tn = static_cast<TypeNode*>(p->children[0].get());
-                        ft->addParam(resolveVarType(tn->type, funcId->line));
-                    }
-                }
-                bodyIdx = 3;
-            }
-            addSymbolLogged(funcId->name, ft, true, funcId->line);
-            logTypeCheck("行 " + std::to_string(funcId->line) + ": 检查函数 "
-                         + funcId->name + " 函数体");
+            astwalk::walkParams(layout.paramList, [&](TypeNode* tn, IdentifierNode*) {
+                ft->addParam(resolveVarType(tn->type, layout.id->line));
+            });
+            addSymbolLogged(layout.id->name, ft, true, layout.id->line);
+            logTypeCheck("行 " + std::to_string(layout.id->line) + ": 检查函数 "
+                         + layout.id->name + " 函数体");
             Type* savedReturnType = currentReturnType_;
             currentReturnType_ = fnRetType;
             enterScopeLogged();
-            // 将形参作为局部变量加入函数体作用域
-            if (bodyIdx == 3) {
-                auto* plist = static_cast<MultiNode*>(func->children[2].get());
-                for (auto& pch : plist->children) {
-                    auto* p = static_cast<MultiNode*>(pch.get());
-                    if (p->children.size() >= 2) {
-                        auto* id = static_cast<IdentifierNode*>(p->children[1].get());
-                        auto* tn = static_cast<TypeNode*>(p->children[0].get());
-                        Type* ptype = resolveVarType(tn->type, id->line);
-                        addSymbolLogged(id->name, ptype, false, id->line);
-                    }
-                }
-            }
-            if (bodyIdx < func->children.size()) {
+            astwalk::walkParams(layout.paramList, [&](TypeNode* tn, IdentifierNode* pid) {
+                Type* ptype = resolveVarType(tn->type, pid->line);
+                addSymbolLogged(pid->name, ptype, false, pid->line);
+            });
+            if (layout.body) {
                 skipCompoundScope_ = true;
-                visitStmt(func->children[bodyIdx].get());
+                visitStmt(layout.body);
                 if (!fnRetType->isVoid()
-                    && !stmtGuaranteedReturn(func->children[bodyIdx].get())) {
-                    error("non-void function '" + funcId->name
-                          + "' may fail to return a value", funcId->line);
+                    && !stmtGuaranteedReturn(layout.body)) {
+                    error("non-void function '" + layout.id->name
+                          + "' may fail to return a value", layout.id->line);
                 }
             }
             leaveScopeLogged();

@@ -491,6 +491,7 @@ seu-compiler/
 ├── Frontend/              # 编译器前端
 │   ├── main_front.cpp     # 驱动词法/语法/语义/IR
 │   ├── compile_pipeline.* # 语义+IR 统一入口与 finalizeIR
+│   ├── ast_walk.h         # TypeChecker/IRGenerator 共用 AST 遍历辅助
 │   ├── ast_format.*       # AST 共享格式化（文本树 / DOT 共用）
 │   ├── ast_printer.*      # AST 文本树
 │   ├── ast_dot.*          # AST Graphviz 导出

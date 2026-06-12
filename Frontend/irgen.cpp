@@ -23,6 +23,8 @@
 
 #include "irgen.h"
 #include "symbol.h"
+#include "type.h"
+#include "ast_walk.h"
 #include "common_defs.h"
 #include <fstream>
 #include <iostream>
@@ -369,16 +371,11 @@ void IRGenerator::visitStmt(ASTNode* stmt) {
     switch (stmt->kind) {
         case NodeKind::CompoundStmt: {
             auto* block = (MultiNode*)stmt;
-            if (skipCompoundScope_) {
-                skipCompoundScope_ = false;
-                for (auto& child : block->children)
-                    visitStmt(child.get());
-            } else {
-                enterScope();
-                for (auto& child : block->children)
-                    visitStmt(child.get());
-                leaveScope();
-            }
+            astwalk::walkCompound(
+                block, skipCompoundScope_,
+                []() { enterScope(); },
+                []() { leaveScope(); },
+                [this](ASTNode* child) { visitStmt(child); });
             break;
         }
         case NodeKind::ExprStmt: {
@@ -387,15 +384,13 @@ void IRGenerator::visitStmt(ASTNode* stmt) {
             break;
         }
         case NodeKind::VarDecl: {
-            auto* decl = (MultiNode*)stmt;
-            if (decl->children.size() >= 2) {
-                auto* tn = (TypeNode*)decl->children[0].get();
-                auto* id = (IdentifierNode*)decl->children[1].get();
-                Symbol* sym = addSymbol(id->name, resolveDeclaredType(tn->type), false);
-                if (decl->children.size() >= 3) {
-                    std::string val = visit(decl->children[2].get());
-                    emit("=", val, "", sym->irName);
-                }
+            astwalk::VarDeclLayout layout;
+            if (!astwalk::parseVarDeclLayout(static_cast<MultiNode*>(stmt), layout))
+                break;
+            Symbol* sym = addSymbol(layout.id->name, resolveDeclaredType(layout.typeNode->type), false);
+            if (layout.init) {
+                std::string val = visit(layout.init);
+                emit("=", val, "", sym->irName);
             }
             break;
         }
@@ -539,34 +534,21 @@ void IRGenerator::visitStmt(ASTNode* stmt) {
             break;
         }
         case NodeKind::FuncDef: {
-            auto* func = (MultiNode*)stmt;
+            astwalk::FuncDefLayout layout;
+            if (!astwalk::parseFuncDefLayout(static_cast<MultiNode*>(stmt), layout))
+                break;
             std::string savedFunc = currentFunc;
-            if (func->children.size() >= 2) {
-                auto* id = (IdentifierNode*)func->children[1].get();
-                auto* retType = (TypeNode*)func->children[0].get();
-                addSymbol(id->name, retType->type, true);
-                currentFunc = id->name;
-                code.push_back({"func", id->name, "", ""});
-            }
+            addSymbol(layout.id->name, layout.retType->type, true);
+            currentFunc = layout.id->name;
+            code.push_back({"func", layout.id->name, "", ""});
             enterScope();
-            size_t bodyIdx = 2;
-            if (func->children.size() >= 4 &&
-                func->children[2]->kind == NodeKind::ParamList) {
-                auto* paramList = (MultiNode*)func->children[2].get();
-                for (auto& p : paramList->children) {
-                    auto* paramDecl = (MultiNode*)p.get();
-                    if (paramDecl->children.size() >= 2) {
-                        auto* tn = (TypeNode*)paramDecl->children[0].get();
-                        auto* pid = (IdentifierNode*)paramDecl->children[1].get();
-                        Symbol* sym = addSymbol(pid->name, tn->type, false);
-                        emit("param", "", "", sym->irName);
-                    }
-                }
-                bodyIdx = 3;
-            }
-            if (bodyIdx < func->children.size()) {
+            astwalk::walkParams(layout.paramList, [&](TypeNode* tn, IdentifierNode* pid) {
+                Symbol* sym = addSymbol(pid->name, tn->type, false);
+                emit("param", "", "", sym->irName);
+            });
+            if (layout.body) {
                 skipCompoundScope_ = true;
-                visitStmt(func->children[bodyIdx].get());
+                visitStmt(layout.body);
             }
             leaveScope();
             currentFunc = savedFunc;
