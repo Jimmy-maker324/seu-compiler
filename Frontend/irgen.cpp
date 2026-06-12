@@ -156,7 +156,6 @@ void IRGenerator::dump() {
         }
         out << "\n";
     }
-    std::cout << "IR dumped to " << outFile << std::endl;
 }
 
 /** @brief 表达式访问分发 */
@@ -392,7 +391,7 @@ void IRGenerator::visitStmt(ASTNode* stmt) {
             if (decl->children.size() >= 2) {
                 auto* tn = (TypeNode*)decl->children[0].get();
                 auto* id = (IdentifierNode*)decl->children[1].get();
-                Symbol* sym = addSymbol(id->name, tn->type, false);
+                Symbol* sym = addSymbol(id->name, resolveDeclaredType(tn->type), false);
                 if (decl->children.size() >= 3) {
                     std::string val = visit(decl->children[2].get());
                     emit("=", val, "", sym->irName);

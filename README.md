@@ -145,13 +145,17 @@ gen_docs.bat
 ### 用法
 
 ```text
-build\compiler.exe <源文件> [-o 报告.txt] [--no-opt]
+build\compiler.exe <源文件> [-o 报告.txt] [--no-opt] [--no-lex-dump] [--no-dot]
+build\compiler.exe -h
 ```
 
 | 选项 | 说明 |
 |------|------|
 | `-o path` | 词法/语法/语义详情报告路径（默认 `output/out.txt`） |
 | `--no-opt` | 跳过 IR 优化；`output/output.ir` 与 `output/output_raw.ir` 内容相同 |
+| `--no-lex-dump` | 报告中跳过 Token 列表（仍执行词法/语法分析） |
+| `--no-dot` | 不导出 `output/ast.dot` / `output/ast.png` |
+| `-h`, `--help` | 显示帮助 |
 
 示例：
 
@@ -173,7 +177,7 @@ build\compiler.exe examples\block_scope.c --no-opt
 | 6 | 中间代码 | 优化统计（默认）或 `--no-opt` 提示 | `output/output.ir`、`output/output_raw.ir` |
 
 语法分析失败时以非零退出码结束（**1** = 语法错误，`yyparse` 失败或 `parseErrorCount > 0`），不生成 AST/IR。  
-语义分析失败（含符号重定义、类型错误）时退出码为 **2**，**不生成 IR**。
+语义分析失败（含符号重定义、类型错误）时退出码为 **2**，**不生成 IR**；此时 `output/out.txt` 中的 AST 文本与 `output/ast.dot`（未加 `--no-dot` 时）仍会保留，便于对照错误位置。
 
 ---
 
@@ -223,7 +227,7 @@ build\compiler.exe examples\block_scope.c --no-opt
 | 调用 | `param`（传实参/接形参）、`call`（含函数指针间接调用） |
 | 字符串 | `str`（定义只读字符串常量，结果为 `strN`，表示 `char*`） |
 
-**局部变量命名**：`Symbol::irName` 在 `addSymbol` 时分配；语义分析与 IR 生成共用 `enterScope` / `leaveScope` / `getSymbol`（全局/函数名保留源名，其它局部为 `name_N`）。
+**局部变量命名**：`Symbol::irName` 在 `addSymbol` 时分配；语义分析与 IR 生成各遍历一次 AST，使用相同的作用域规则与 `resolveDeclaredType()` 解析类型，IR 名一致。
 
 **字符串示例**（`examples/string_test.c` 编译成功后，`output/output.ir` 片段）：
 
@@ -324,6 +328,12 @@ C 语言 **MiniC 子集**，文法见 `grammar/yacc.y`，词法见 `grammar/lex.
 | `examples/string_test.c` | 字符串字面量与 `char*` 传参（exit 0） |
 | `examples/bad_string_int.c` | 整型变量赋字符串（语义失败，exit 2） |
 | `examples/syntax_err.c` | 语法错误（exit 1） |
+| `examples/for_loop.c` | 简单 `for` 循环（exit 0） |
+| `examples/logic_ops.c` | `&&` / `||` / `!`（exit 0） |
+| `examples/bad_undef.c` | 未定义标识符（语义失败，exit 2） |
+| `examples/bad_call.c` | 实参个数不匹配（语义失败，exit 2） |
+| `examples/bad_continue_switch.c` | `switch` 内 `continue`（语义失败，exit 2） |
+| `examples/bad_missing_return.c` | 非 void 函数缺少 return（语义失败，exit 2） |
 
 ### 回归测试
 
@@ -341,18 +351,26 @@ test.bat --no-build
 
 | 用例 | 期望退出码 | 说明 |
 |------|------------|------|
-| `test.c` | 0 | 综合示例，应生成 `output/output.ir` |
+| `test.c` | 0 | 综合示例，应生成 `output/output.ir`（含 factorial 四元式） |
 | `block_scope.c` | 0 | 块作用域与 IR 变量遮蔽 |
+| `for_loop.c` | 0 | 简单 for 循环 |
+| `logic_ops.c` | 0 | 逻辑运算 |
 | `syntax_err.c` | 1 | 语法错误 |
 | `redef.c` | 2 | 符号重定义 |
 | `bad_break.c` | 2 | 循环外 `break` |
 | `bad_continue.c` | 2 | 循环外 `continue` |
+| `bad_continue_switch.c` | 2 | `switch` 内 `continue` |
 | `dup_case.c` | 2 | 重复 `case` |
 | `bad_void_return.c` | 2 | `void` 函数带返回值 |
 | `bad_empty_return.c` | 2 | 非 `void` 函数空 `return` |
 | `bad_return_type.c` | 2 | 返回值类型不匹配 |
+| `bad_missing_return.c` | 2 | 非 void 函数可能缺少 return |
+| `bad_undef.c` | 2 | 未定义标识符 |
+| `bad_call.c` | 2 | 实参个数不匹配 |
 | `string_test.c` | 0 | 字符串字面量与 `char*` |
 | `bad_string_int.c` | 2 | 整型赋字符串 |
+
+此外脚本会校验 **`--no-opt`**（`output.ir` 与 `output_raw.ir` 一致）与 **`-o`** 自定义报告路径。
 
 全部通过时 `test.bat` 退出码为 **0**；任一失败为 **1**。
 

@@ -13,3 +13,6 @@ docs/html/
 
 # IDE 本地配置
 .vscode/
+
+# 本地临时源文件
+tmp.c

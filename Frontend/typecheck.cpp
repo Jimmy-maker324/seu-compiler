@@ -106,47 +106,53 @@ static bool isLogicalOp(int op) {
     return op == T_AND_OP || op == T_OR_OP;
 }
 
+static bool isScalarCondition(Type* t) {
+    return t && (t->isNumeric() || t->kind == TypeKind::Pointer);
+}
+
+static bool stmtGuaranteedReturn(ASTNode* stmt) {
+    if (!stmt) return false;
+    switch (stmt->kind) {
+        case NodeKind::ReturnStmt:
+            return true;
+        case NodeKind::CompoundStmt: {
+            auto* block = static_cast<MultiNode*>(stmt);
+            if (block->children.empty()) return false;
+            return stmtGuaranteedReturn(block->children.back().get());
+        }
+        case NodeKind::IfStmt: {
+            auto* ifNode = static_cast<MultiNode*>(stmt);
+            if (ifNode->children.size() < 2) return false;
+            if (ifNode->children.size() >= 3)
+                return stmtGuaranteedReturn(ifNode->children[1].get())
+                    && stmtGuaranteedReturn(ifNode->children[2].get());
+            return false;
+        }
+        default:
+            return false;
+    }
+}
+
 /** @brief clone 并解析类型树（不修改 AST 上的 Type*） */
 Type* TypeChecker::resolveTypeTree(Type* ftype, int line, bool reportUnknownTag) {
-    if (!ftype) return BasicType::Int;
-    if (ftype->kind == TypeKind::Pointer) {
-        Type* base = resolveTypeTree(static_cast<PointerType*>(ftype)->base, line,
-                                      reportUnknownTag);
-        if (base == BasicType::Char)
-            return BasicType::CharPtr;
-        return new PointerType(base);
+    if (ftype && ftype->kind == TypeKind::Struct && reportUnknownTag) {
+        StructType* reg = lookupStructType(static_cast<StructType*>(ftype)->name);
+        if (!reg || reg->members.empty())
+            error("unknown struct type: " + static_cast<StructType*>(ftype)->name, line);
     }
-    Type* t = cloneType(ftype);
-    if (t->kind == TypeKind::Array) {
-        static_cast<ArrayType*>(t)->base =
-            resolveTypeTree(static_cast<ArrayType*>(t)->base, line, reportUnknownTag);
-        return t;
+    if (ftype && ftype->kind == TypeKind::Union && reportUnknownTag) {
+        UnionType* reg = lookupUnionType(static_cast<UnionType*>(ftype)->name);
+        if (!reg || reg->members.empty())
+            error("unknown union type: " + static_cast<UnionType*>(ftype)->name, line);
     }
-    if (t->kind == TypeKind::Function) {
-        auto* ft = static_cast<FunctionType*>(t);
-        for (size_t i = 0; i < ft->paramTypes.size(); ++i)
-            ft->paramTypes[i] = resolveTypeTree(ft->paramTypes[i], line, reportUnknownTag);
-        return t;
-    }
-    if (t->kind == TypeKind::Struct) {
-        StructType* reg = lookupStructType(static_cast<StructType*>(t)->name);
-        if (!reg || reg->members.empty()) {
-            if (reportUnknownTag)
-                error("unknown struct type: " + static_cast<StructType*>(t)->name, line);
-            return BasicType::Int;
-        }
-        return reg;
-    }
-    if (t->kind == TypeKind::Union) {
-        UnionType* reg = lookupUnionType(static_cast<UnionType*>(t)->name);
-        if (!reg || reg->members.empty()) {
-            if (reportUnknownTag)
-                error("unknown union type: " + static_cast<UnionType*>(t)->name, line);
-            return BasicType::Int;
-        }
-        return reg;
-    }
-    return t;
+    return resolveDeclaredType(ftype);
+}
+
+void TypeChecker::checkCondition(ASTNode* cond, int line) {
+    if (!cond) return;
+    Type* t = visit(cond);
+    if (!isScalarCondition(t))
+        error("control condition requires scalar type", line);
 }
 
 void TypeChecker::enterScopeLogged() {
@@ -258,8 +264,8 @@ Type* TypeChecker::visitBinaryOp(BinaryOpNode* bin) {
     Type* left = visit(bin->left.get());
     Type* right = visit(bin->right.get());
     if (isLogicalOp(bin->op)) {
-        if (!left->isInt() || !right->isInt()) {
-            error("logical operator requires int operands", bin->line);
+        if (!left->isNumeric() || !right->isNumeric()) {
+            error("logical operator requires numeric operands", bin->line);
         }
         return BasicType::Int;
     }
@@ -307,8 +313,8 @@ Type* TypeChecker::visitUnaryOp(UnaryOpNode* un) {
         }
         return ((PointerType*)operand)->base;
     }
-    if (un->op == '!' && !operand->isInt()) {
-        error("logical not requires int operand", un->line);
+    if (un->op == '!' && !isScalarCondition(operand)) {
+        error("logical not requires scalar operand", un->line);
     }
     return BasicType::Int;
 }
@@ -574,9 +580,8 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
             break;
         case NodeKind::IfStmt: {
             auto* ifNode = (MultiNode*)stmt;
-            // children: [0]=条件, [1]=then, [2]=else（可选）
             if (ifNode->children.size() >= 1)
-                visit(ifNode->children[0].get());
+                checkCondition(ifNode->children[0].get(), ifNode->line);
             if (ifNode->children.size() >= 2)
                 visitStmt(ifNode->children[1].get());
             if (ifNode->children.size() >= 3)
@@ -586,7 +591,7 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
         case NodeKind::WhileStmt: {
             auto* whileNode = static_cast<MultiNode*>(stmt);
             if (whileNode->children.size() >= 1)
-                visit(whileNode->children[0].get());
+                checkCondition(whileNode->children[0].get(), whileNode->line);
             ++loopDepth_;
             if (whileNode->children.size() >= 2)
                 visitStmt(whileNode->children[1].get());
@@ -599,7 +604,7 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
                 visitStmt(forNode->children[0].get());
             ++loopDepth_;
             if (forNode->children.size() >= 2 && forNode->children[1])
-                visit(forNode->children[1].get());
+                checkCondition(forNode->children[1].get(), forNode->line);
             if (forNode->children.size() >= 3 && forNode->children[2])
                 visitStmt(forNode->children[2].get());
             if (forNode->children.size() >= 4 && forNode->children[3])
@@ -701,6 +706,11 @@ void TypeChecker::visitStmt(ASTNode* stmt) {
             if (bodyIdx < func->children.size()) {
                 skipCompoundScope_ = true;
                 visitStmt(func->children[bodyIdx].get());
+                if (!fnRetType->isVoid()
+                    && !stmtGuaranteedReturn(func->children[bodyIdx].get())) {
+                    error("non-void function '" + funcId->name
+                          + "' may fail to return a value", funcId->line);
+                }
             }
             leaveScopeLogged();
             currentReturnType_ = savedReturnType;

@@ -71,6 +71,7 @@ private:
     Type* resolveVarType(Type* varType, int line);
     /** @brief clone 并解析类型树；reportUnknownTag 为 false 时不报未定义 tag */
     Type* resolveTypeTree(Type* src, int line, bool reportUnknownTag);
+    void checkCondition(ASTNode* cond, int line);
     /** @brief 访问语句节点（声明、控制流、函数定义等） */
     void visitStmt(ASTNode* stmt);
     /** @brief 输出类型错误到 stderr 与详情报告 */

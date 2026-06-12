@@ -162,4 +162,7 @@ UnionType* defineUnionType(const std::string& name);
 /** @brief 深拷贝类型树（基本类型与已注册 struct/union  tag 复用，不共享可变子树） */
 Type* cloneType(Type* t);
 
+/** @brief 解析声明中的类型树（struct/union 绑定注册表；IR 生成与语义分析共用） */
+Type* resolveDeclaredType(Type* src);
+
 #endif

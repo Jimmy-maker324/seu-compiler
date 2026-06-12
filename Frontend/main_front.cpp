@@ -43,8 +43,18 @@ extern int parseErrorCount;
 
 /** @brief Bison/Flex 生成的语法分析入口 */
 int yyparse(void);
-/** @brief 语法错误回调，由语法分析器调用 */
-void yyerror(const char* msg);
+
+static void print_usage(const char* prog) {
+    fprintf(stderr,
+        "Usage: %s <source.c> [options]\n"
+        "Options:\n"
+        "  -o <file>       Detail report path (default: output/out.txt)\n"
+        "  --no-opt        Skip IR optimization\n"
+        "  --no-lex-dump   Skip lexical token listing in report (parse still runs)\n"
+        "  --no-dot        Skip ast.dot / ast.png export\n"
+        "  -h, --help      Show this help\n",
+        prog);
+}
 
 #ifdef _WIN32
 #include <io.h>
@@ -134,26 +144,35 @@ int main(int argc, char** argv) {
     const char* sourcePath = nullptr;
     const char* detailPath = "output/out.txt";
     bool noOpt = false;
+    bool noLexDump = false;
+    bool noDot = false;
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
             detailPath = argv[++i];
         } else if (strcmp(argv[i], "--no-opt") == 0) {
             noOpt = true;
+        } else if (strcmp(argv[i], "--no-lex-dump") == 0) {
+            noLexDump = true;
+        } else if (strcmp(argv[i], "--no-dot") == 0) {
+            noDot = true;
+        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            print_usage(argv[0]);
+            return 0;
         } else if (argv[i][0] == '-') {
             fprintf(stderr, "Unknown option: %s\n", argv[i]);
-            fprintf(stderr, "Usage: %s <source> [-o report.txt] [--no-opt]\n", argv[0]);
+            print_usage(argv[0]);
             return 1;
         } else if (!sourcePath) {
             sourcePath = argv[i];
         } else {
             fprintf(stderr, "Unexpected argument: %s\n", argv[i]);
-            fprintf(stderr, "Usage: %s <source> [-o report.txt] [--no-opt]\n", argv[0]);
+            print_usage(argv[0]);
             return 1;
         }
     }
 
     if (!sourcePath) {
-        fprintf(stderr, "Usage: %s <source> [-o report.txt] [--no-opt]\n", argv[0]);
+        print_usage(argv[0]);
         return 1;
     }
 
@@ -164,7 +183,13 @@ int main(int argc, char** argv) {
     std::ofstream detailOut = open_detail_file(detailPath);
     char* input = read_file(sourcePath);
 
-    int tokenCount = run_lexical_analysis(input, detailOut);
+    int tokenCount = 0;
+    if (noLexDump) {
+        detailOut << "========== 词法分析 ==========\n";
+        detailOut << "  （已跳过 Token 列表，使用 --no-lex-dump）\n\n";
+    } else {
+        tokenCount = run_lexical_analysis(input, detailOut);
+    }
     printf("词法分析完成（%d tokens，详见 %s）\n", tokenCount, detailPath);
 
     detailOut << "========== 语法分析 ==========\n";
@@ -197,26 +222,27 @@ int main(int argc, char** argv) {
         printer.print(astRoot, detailOut);
         detailOut << "\n";
 
-        if (true) {
-        ASTDotExporter dotter;
-        dotter.exportToFile(astRoot, "output/ast.dot");
-        detailOut << "========== 语法树 (Graphviz) ==========\n";
-        detailOut << "  已导出 output/ast.dot\n";
-        if (renderDotToPng("output/ast.dot", "output/ast.png")) {
-            detailOut << "  已生成 output/ast.png\n\n";
-            printf("语法树已写入 %s，output/ast.dot / output/ast.png 已生成\n", detailPath);
+        if (!noDot) {
+            ASTDotExporter dotter;
+            dotter.exportToFile(astRoot, "output/ast.dot");
+            detailOut << "========== 语法树 (Graphviz) ==========\n";
+            detailOut << "  已导出 output/ast.dot\n";
+            if (renderDotToPng("output/ast.dot", "output/ast.png")) {
+                detailOut << "  已生成 output/ast.png\n\n";
+                printf("语法树已写入 %s，output/ast.dot / output/ast.png 已生成\n", detailPath);
+            } else {
+                detailOut << "  未生成 output/ast.png（请安装 Graphviz 并将 dot 加入 PATH）\n\n";
+                printf("语法树已写入 %s，output/ast.dot 已导出（未找到 dot，跳过 ast.png）\n", detailPath);
+            }
         } else {
-            detailOut << "  未生成 output/ast.png（请安装 Graphviz 并将 dot 加入 PATH）\n\n";
-            printf("语法树已写入 %s，output/ast.dot 已导出（未找到 dot，跳过 ast.png）\n", detailPath);
-        }
-        } else {
-            printf("语法树已写入 %s\n", detailPath);
+            printf("语法树已写入 %s（已跳过 DOT/PNG，--no-dot）\n", detailPath);
         }
 
         printf("语义分析... ");
         TypeChecker checker;
         checker.check(astRoot, &detailOut);
         if (checker.hasErrors()) {
+            detailOut << "  语义失败：已跳过 IR；AST 文本与 ast.dot 仍保留于 output/\n\n";
             printf("失败（%d 个类型错误），跳过 IR 生成\n", checker.errorCount());
             detailOut.close();
             return 2;
@@ -241,6 +267,7 @@ int main(int argc, char** argv) {
                    optStats.deadRemoved, optStats.hoisted);
             irgen.dump();
         }
+        printf("IR 已写入 output/output.ir\n");
 
         printf("全部阶段完成。\n");
     } else {

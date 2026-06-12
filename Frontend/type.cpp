@@ -99,6 +99,39 @@ Type* cloneType(Type* t) {
     }
 }
 
+Type* resolveDeclaredType(Type* ftype) {
+    if (!ftype) return BasicType::Int;
+    if (ftype->kind == TypeKind::Pointer) {
+        Type* base = resolveDeclaredType(static_cast<PointerType*>(ftype)->base);
+        if (base == BasicType::Char)
+            return BasicType::CharPtr;
+        return new PointerType(base);
+    }
+    Type* t = cloneType(ftype);
+    if (t->kind == TypeKind::Array) {
+        static_cast<ArrayType*>(t)->base =
+            resolveDeclaredType(static_cast<ArrayType*>(t)->base);
+        return t;
+    }
+    if (t->kind == TypeKind::Function) {
+        auto* ft = static_cast<FunctionType*>(t);
+        for (size_t i = 0; i < ft->paramTypes.size(); ++i)
+            ft->paramTypes[i] = resolveDeclaredType(ft->paramTypes[i]);
+        return t;
+    }
+    if (t->kind == TypeKind::Struct) {
+        StructType* reg = lookupStructType(static_cast<StructType*>(t)->name);
+        if (!reg || reg->members.empty()) return BasicType::Int;
+        return reg;
+    }
+    if (t->kind == TypeKind::Union) {
+        UnionType* reg = lookupUnionType(static_cast<UnionType*>(t)->name);
+        if (!reg || reg->members.empty()) return BasicType::Int;
+        return reg;
+    }
+    return t;
+}
+
 /** @brief 递归将类型格式化为 C 风格字符串（如 int*、char[10]、struct Point） */
 std::string Type::toString() const {
     switch (kind) {
